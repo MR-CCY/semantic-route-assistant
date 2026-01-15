@@ -1,0 +1,1 @@
+Stop AI from bloating your codebase.

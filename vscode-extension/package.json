@@ -1,0 +1,88 @@
+{
+  "name": "semantic-route-assistant",
+  "displayName": "Semantic Route Assistant",
+  "description": "VS Code extension for building semantic route index stubs.",
+  "version": "0.0.1",
+  "publisher": "your-publisher",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:semanticRoute.buildIndex",
+    "onCommand:semanticRoute.configureLLM",
+    "onCommand:semanticRoute.toggleLLM",
+    "onCommand:semanticRoute.updateIndex",
+    "onCommand:semanticRoute.searchSkills"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "semanticRoute.configureLLM",
+        "title": "Semantic Route: Configure LLM"
+      },
+      {
+        "command": "semanticRoute.toggleLLM",
+        "title": "Semantic Route: Toggle LLM"
+      },
+      {
+        "command": "semanticRoute.buildIndex",
+        "title": "Semantic Route: Build Index"
+      },
+      {
+        "command": "semanticRoute.updateIndex",
+        "title": "Semantic Route: Update Index"
+      },
+      {
+        "command": "semanticRoute.searchSkills",
+        "title": "Semantic Route: Search Skill Blocks"
+      }
+    ],
+    "configuration": {
+      "title": "Semantic Route",
+      "properties": {
+        "semanticRoute.llm.provider": {
+          "type": "string",
+          "default": "",
+          "description": "LLM provider (openai/qwen/gemini). Empty disables LLM."
+        },
+        "semanticRoute.llm.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable or disable LLM usage."
+        },
+        "semanticRoute.llm.model": {
+          "type": "string",
+          "default": "",
+          "description": "LLM model name."
+        },
+        "semanticRoute.llm.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Optional API base URL for the provider."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "echo \"No lint configured\"",
+    "pretest": "npm run compile",
+    "test": "echo \"No tests configured\""
+  },
+  "dependencies": {
+    "semantic-route-assistant-core": "file:../core",
+    "semantic-route-core": "file:../core"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.5",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0",
+    "vsce": "^2.15.0"
+  }
+}
