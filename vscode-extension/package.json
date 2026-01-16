@@ -13,6 +13,8 @@
   "activationEvents": [
     "onCommand:semanticRoute.buildIndex",
     "onCommand:semanticRoute.configureLLM",
+    "onCommand:semanticRoute.autoSkillsDoc",
+    "onCommand:semanticRoute.autoSkillsClipboard",
     "onCommand:semanticRoute.updateIndex",
     "onCommand:semanticRoute.searchSkills"
   ],
@@ -22,6 +24,14 @@
       {
         "command": "semanticRoute.configureLLM",
         "title": "Semantic Route: Configure LLM"
+      },
+      {
+        "command": "semanticRoute.autoSkillsDoc",
+        "title": "Semantic Route: Auto Skills (Doc)"
+      },
+      {
+        "command": "semanticRoute.autoSkillsClipboard",
+        "title": "Semantic Route: Auto Skills (Clipboard)"
       },
       {
         "command": "semanticRoute.buildIndex",
@@ -94,6 +104,11 @@
           "type": "number",
           "default": 4,
           "description": "生成 brief 时的并发数量。"
+        },
+        "semanticRoute.skills.autoTopN": {
+          "type": "number",
+          "default": 8,
+          "description": "Auto Skills 自动选取的 Top N 数量。"
         },
         "semanticRoute.llm.baseUrl": {
           "type": "string",

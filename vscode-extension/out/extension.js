@@ -270,6 +270,60 @@ function getCodeSnippet(editor) {
         ? editor.document.getText()
         : editor.document.getText(editor.selection);
 }
+function getAutoQuery(editor) {
+    const selected = getSelectedText(editor).trim();
+    if (selected) {
+        return selected;
+    }
+    if (editor) {
+        const lineText = editor.document.lineAt(editor.selection.active.line).text.trim();
+        if (lineText) {
+            return lineText;
+        }
+        return path_1.default.basename(editor.document.fileName);
+    }
+    return "";
+}
+function buildApiPrompt(items, codeSnippet) {
+    const apiLines = [];
+    for (const item of items) {
+        apiLines.push(`- \`${item.signature}\``);
+        if (item.brief) {
+            apiLines.push(`  ${item.brief}`);
+        }
+        else {
+            apiLines.push(`  TODO: brief description`);
+        }
+        apiLines.push("");
+    }
+    return [
+        "# Relevant APIs",
+        "",
+        ...apiLines,
+        "# Current Code",
+        "",
+        "```cpp",
+        codeSnippet,
+        "```"
+    ].join("\n");
+}
+async function resolveIndexRoot(root) {
+    const v3Root = path_1.default.join(root, ".ai_context");
+    const v2Root = path_1.default.join(root, "llm_index");
+    try {
+        await (0, promises_1.access)(v3Root, fs_1.constants.R_OK);
+        return v3Root;
+    }
+    catch {
+        try {
+            await (0, promises_1.access)(v2Root, fs_1.constants.R_OK);
+            return v2Root;
+        }
+        catch {
+            return null;
+        }
+    }
+}
 async function getProfiles(config) {
     const profiles = config.get("llm.profiles", []);
     return Array.isArray(profiles) ? profiles : [];
@@ -608,22 +662,10 @@ function activate(context) {
             vscode.window.showErrorMessage("Semantic Route: 未找到工作区目录。");
             return;
         }
-        const v3Root = path_1.default.join(root, ".ai_context");
-        const v2Root = path_1.default.join(root, "llm_index");
-        let indexRoot = v2Root;
-        try {
-            await (0, promises_1.access)(v3Root, fs_1.constants.R_OK);
-            indexRoot = v3Root;
-        }
-        catch {
-            try {
-                await (0, promises_1.access)(v2Root, fs_1.constants.R_OK);
-                indexRoot = v2Root;
-            }
-            catch {
-                vscode.window.showErrorMessage("Semantic Route: 未找到索引目录，请先运行 Build/Update Index。");
-                return;
-            }
+        const indexRoot = await resolveIndexRoot(root);
+        if (!indexRoot) {
+            vscode.window.showErrorMessage("Semantic Route: 未找到索引目录，请先运行 Build/Update Index。");
+            return;
         }
         const activeEditor = vscode.window.activeTextEditor;
         const selectionText = getSelectedText(activeEditor);
@@ -667,28 +709,8 @@ function activate(context) {
             if (!picked || picked.length === 0) {
                 return;
             }
-            const apiLines = [];
-            for (const item of picked) {
-                apiLines.push(`- \`${item.signature}\``);
-                if (item.brief) {
-                    apiLines.push(`  ${item.brief}`);
-                }
-                else {
-                    apiLines.push(`  TODO: brief description`);
-                }
-                apiLines.push("");
-            }
             const codeSnippet = getCodeSnippet(activeEditor);
-            const assembled = [
-                "# Relevant APIs",
-                "",
-                ...apiLines,
-                "# Current Code",
-                "",
-                "```cpp",
-                codeSnippet,
-                "```"
-            ].join("\n");
+            const assembled = buildApiPrompt(picked.map((item) => ({ signature: item.signature, brief: item.brief })), codeSnippet);
             const doc = await vscode.workspace.openTextDocument({
                 content: assembled,
                 language: "markdown"
@@ -742,7 +764,86 @@ function activate(context) {
         });
         await vscode.window.showTextDocument(doc);
     });
-    context.subscriptions.push(configureCmd, buildCmd, updateCmd, searchCmd);
+    const autoSkillsDocCmd = vscode.commands.registerCommand("semanticRoute.autoSkillsDoc", async () => {
+        const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!root) {
+            vscode.window.showErrorMessage("Semantic Route: 未找到工作区目录。");
+            return;
+        }
+        const indexRoot = await resolveIndexRoot(root);
+        if (!indexRoot) {
+            vscode.window.showErrorMessage("Semantic Route: 未找到索引目录，请先运行 Build/Update Index。");
+            return;
+        }
+        const routingPath = path_1.default.join(indexRoot, "routing.json");
+        try {
+            await (0, promises_1.access)(routingPath, fs_1.constants.R_OK);
+        }
+        catch {
+            vscode.window.showErrorMessage("Semantic Route: 未找到 routing.json，请先运行 Build/Update Index。");
+            return;
+        }
+        const editor = vscode.window.activeTextEditor;
+        const query = getAutoQuery(editor);
+        if (!query) {
+            vscode.window.showErrorMessage("Semantic Route: 未找到可用于检索的内容。");
+            return;
+        }
+        const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
+        const topN = Math.max(1, config.get("skills.autoTopN", 8));
+        const results = await searchSkillsV2(indexRoot, query);
+        if (!results.length) {
+            vscode.window.showInformationMessage("Semantic Route: 没有搜索到结果。");
+            return;
+        }
+        const picked = results.slice(0, topN);
+        const codeSnippet = getCodeSnippet(editor);
+        const assembled = buildApiPrompt(picked.map((item) => ({ signature: item.signature, brief: item.brief })), codeSnippet);
+        const doc = await vscode.workspace.openTextDocument({
+            content: assembled,
+            language: "markdown"
+        });
+        await vscode.window.showTextDocument(doc);
+    });
+    const autoSkillsClipboardCmd = vscode.commands.registerCommand("semanticRoute.autoSkillsClipboard", async () => {
+        const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!root) {
+            vscode.window.showErrorMessage("Semantic Route: 未找到工作区目录。");
+            return;
+        }
+        const indexRoot = await resolveIndexRoot(root);
+        if (!indexRoot) {
+            vscode.window.showErrorMessage("Semantic Route: 未找到索引目录，请先运行 Build/Update Index。");
+            return;
+        }
+        const routingPath = path_1.default.join(indexRoot, "routing.json");
+        try {
+            await (0, promises_1.access)(routingPath, fs_1.constants.R_OK);
+        }
+        catch {
+            vscode.window.showErrorMessage("Semantic Route: 未找到 routing.json，请先运行 Build/Update Index。");
+            return;
+        }
+        const editor = vscode.window.activeTextEditor;
+        const query = getAutoQuery(editor);
+        if (!query) {
+            vscode.window.showErrorMessage("Semantic Route: 未找到可用于检索的内容。");
+            return;
+        }
+        const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
+        const topN = Math.max(1, config.get("skills.autoTopN", 8));
+        const results = await searchSkillsV2(indexRoot, query);
+        if (!results.length) {
+            vscode.window.showInformationMessage("Semantic Route: 没有搜索到结果。");
+            return;
+        }
+        const picked = results.slice(0, topN);
+        const codeSnippet = getCodeSnippet(editor);
+        const assembled = buildApiPrompt(picked.map((item) => ({ signature: item.signature, brief: item.brief })), codeSnippet);
+        await vscode.env.clipboard.writeText(assembled);
+        vscode.window.showInformationMessage(`Semantic Route: 已复制 Auto Skills（${picked.length} 条）。`);
+    });
+    context.subscriptions.push(configureCmd, buildCmd, updateCmd, searchCmd, autoSkillsDocCmd, autoSkillsClipboardCmd);
 }
 function deactivate() {
     // noop
