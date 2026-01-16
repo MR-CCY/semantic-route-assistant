@@ -11,10 +11,13 @@
     "Other"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onCommand:semanticRoute.buildIndex",
     "onCommand:semanticRoute.configureLLM",
     "onCommand:semanticRoute.autoSkillsDoc",
     "onCommand:semanticRoute.autoSkillsClipboard",
+    "onCommand:semanticRoute.openTagGraph",
+    "onView:semanticRoute.tagGraph",
     "onCommand:semanticRoute.updateIndex",
     "onCommand:semanticRoute.searchSkills"
   ],
@@ -32,6 +35,10 @@
       {
         "command": "semanticRoute.autoSkillsClipboard",
         "title": "Semantic Route: Auto Skills (Clipboard)"
+      },
+      {
+        "command": "semanticRoute.openTagGraph",
+        "title": "Semantic Route: Tag Graph"
       },
       {
         "command": "semanticRoute.buildIndex",
@@ -126,6 +133,15 @@
           "description": "可选的 User Prompt 模板（支持占位符）。"
         }
       }
+    },
+    "views": {
+      "explorer": [
+        {
+          "id": "semanticRoute.tagGraph",
+          "name": "Semantic Route: 标签图谱",
+          "type": "webview"
+        }
+      ]
     }
   },
   "scripts": {

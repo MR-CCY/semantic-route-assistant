@@ -12,6 +12,8 @@ export type RoutingJson = {
       declLine?: number;
       implLine?: number;
       filePath?: string;
+      tagsBase?: string[];
+      tagsSemantic?: string[];
       tags?: string[];
     };
   };
@@ -26,6 +28,8 @@ export function buildRoutingFromModules(
       declLine?: number;
       implLine?: number;
       filePath?: string;
+      tagsBase?: string[];
+      tagsSemantic?: string[];
       tags?: string[];
     }>
   >
@@ -41,6 +45,8 @@ export function buildRoutingFromModules(
         declLine: entry.declLine,
         implLine: entry.implLine,
         filePath: entry.filePath,
+        tagsBase: entry.tagsBase,
+        tagsSemantic: entry.tagsSemantic,
         tags: entry.tags
       };
     }

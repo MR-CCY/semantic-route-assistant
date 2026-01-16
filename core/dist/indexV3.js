@@ -48,7 +48,7 @@ function buildMeta(fileHashes) {
     }
     return meta;
 }
-const ENTRY_REGEX = /^\s*-\s+`([^`]+)`\s*<!--\s*id:\s*([^|]+)\s*\|\s*hash:\s*([^\s|]+)(?:\s*\|\s*impl:\s*([^\s|]+))?(?:\s*\|\s*file:\s*([^|]+))?(?:\s*\|\s*tags:\s*\[([^\]]*)\])?\s*-->/;
+const ENTRY_REGEX = /^\s*-\s+`([^`]+)`\s*<!--\s*id:\s*([^|]+)\s*\|\s*hash:\s*([^\s|]+)(?:\s*\|\s*impl:\s*([^\s|]+))?(?:\s*\|\s*file:\s*([^|]+))?(?:\s*\|\s*tags_base:\s*\[([^\]]*)\])?(?:\s*\|\s*tags_sem:\s*\[([^\]]*)\])?(?:\s*\|\s*tags:\s*\[([^\]]*)\])?\s*-->/;
 function parseModuleEntries(content) {
     const entries = new Map();
     const lines = content.split("\n");
@@ -63,9 +63,23 @@ function parseModuleEntries(content) {
         const declHash = match[3].trim();
         const implHash = match[4]?.trim();
         const filePath = match[5]?.trim();
-        const tagsRaw = match[6];
-        const tags = tagsRaw
-            ? tagsRaw
+        const baseTagsRaw = match[6];
+        const semanticTagsRaw = match[7];
+        const legacyTagsRaw = match[8];
+        const baseTags = baseTagsRaw
+            ? baseTagsRaw
+                .split(",")
+                .map((tag) => tag.trim().toLowerCase())
+                .filter(Boolean)
+            : [];
+        const semanticTags = semanticTagsRaw
+            ? semanticTagsRaw
+                .split(",")
+                .map((tag) => tag.trim().toLowerCase())
+                .filter(Boolean)
+            : [];
+        const legacyTags = legacyTagsRaw
+            ? legacyTagsRaw
                 .split(",")
                 .map((tag) => tag.trim().toLowerCase())
                 .filter(Boolean)
@@ -83,7 +97,8 @@ function parseModuleEntries(content) {
             declHash,
             implHash,
             brief,
-            tags,
+            baseTags: baseTags,
+            semanticTags: semanticTags.length > 0 ? semanticTags : legacyTags,
             filePath
         });
         i = j - 1;
@@ -143,10 +158,14 @@ function renderModuleGroup(group) {
     const ordered = [...group.symbols].sort((a, b) => a.signature.localeCompare(b.signature));
     for (const symbol of ordered) {
         const normalized = (0, signatureUtils_1.normalizeSignature)(symbol.signature);
-        const tagList = (symbol.tags || []).map((tag) => tag.toLowerCase().trim()).filter(Boolean);
-        const tagSegment = tagList.length > 0 ? ` | tags: [${tagList.join(", ")}]` : "";
+        const baseTags = (symbol.baseTags || []).map((tag) => tag.toLowerCase().trim()).filter(Boolean);
+        const semanticTags = (symbol.semanticTags || [])
+            .map((tag) => tag.toLowerCase().trim())
+            .filter(Boolean);
+        const baseSegment = baseTags.length > 0 ? ` | tags_base: [${baseTags.join(", ")}]` : "";
+        const semSegment = semanticTags.length > 0 ? ` | tags_sem: [${semanticTags.join(", ")}]` : "";
         const implSegment = symbol.implHash ? ` | impl: ${symbol.implHash}` : "";
-        lines.push(`- \`${normalized}\` <!-- id: ${symbol.symbolId} | hash: ${symbol.declHash}${implSegment} | file: ${symbol.filePath}${tagSegment} -->`);
+        lines.push(`- \`${normalized}\` <!-- id: ${symbol.symbolId} | hash: ${symbol.declHash}${implSegment} | file: ${symbol.filePath}${baseSegment}${semSegment} -->`);
         lines.push(`  ${symbol.brief}`);
         lines.push("");
     }
@@ -180,6 +199,8 @@ async function collectSymbolsForV3(projectRoot, outDir, reuseExisting, adapter, 
             const declHash = (0, signatureUtils_1.hashSignature)(normalizedSignature);
             const pathModuleHint = adapter.inferPathModuleHint(relativePath);
             const rawId = symbol.id;
+            const declLine = symbol.declLine;
+            const implLine = symbol.implLine;
             const parts = rawId.split("::").filter(Boolean);
             const qualifierDepth = parts.length;
             const canonicalId = parts.length > 2 ? parts.slice(-2).join("::") : parts.join("::");
@@ -206,6 +227,8 @@ async function collectSymbolsForV3(projectRoot, outDir, reuseExisting, adapter, 
                     symbolId,
                     declHash,
                     implHash,
+                    declLine,
+                    implLine,
                     pathModuleHint,
                     baseTags,
                     priority,
@@ -221,6 +244,8 @@ async function collectSymbolsForV3(projectRoot, outDir, reuseExisting, adapter, 
             existing.declHash === candidate.declHash &&
             existing.implHash === candidate.implHash;
         if (canReuse) {
+            const baseTags = existing.baseTags.length > 0 ? existing.baseTags : candidate.baseTags;
+            const semanticTags = existing.semanticTags.length > 0 ? existing.semanticTags : [];
             symbols.push({
                 symbolId: candidate.symbolId,
                 signature: candidate.signature,
@@ -228,8 +253,11 @@ async function collectSymbolsForV3(projectRoot, outDir, reuseExisting, adapter, 
                 implHash: candidate.implHash,
                 brief: existing.brief,
                 filePath: candidate.filePath,
+                declLine: candidate.declLine,
+                implLine: candidate.implLine,
                 pathModuleHint: candidate.pathModuleHint,
-                tags: existing.tags.length > 0 ? existing.tags : candidate.baseTags
+                baseTags,
+                semanticTags
             });
             continue;
         }
@@ -238,6 +266,8 @@ async function collectSymbolsForV3(projectRoot, outDir, reuseExisting, adapter, 
             signature: candidate.signature,
             symbolId: candidate.symbolId,
             declHash: candidate.declHash,
+            declLine: candidate.declLine,
+            implLine: candidate.implLine,
             pathModuleHint: candidate.pathModuleHint,
             baseTags: candidate.baseTags
         });
@@ -261,7 +291,12 @@ async function resolveBriefsForV3(projectRoot, adapter, briefTasks, symbols, opt
             implementation: impl.implementation ?? undefined,
             filePath: task.filePath
         });
-        const mergedTags = Array.from(new Set([...(task.baseTags || []), ...(briefResult.tags || [])]));
+        const semanticTags = (0, tagUtils_1.filterSemanticTags)({
+            semanticTags: briefResult.tags || [],
+            baseTags: task.baseTags || [],
+            filePath: task.filePath,
+            symbolId: task.symbolId
+        });
         const result = {
             filePath: task.filePath,
             symbolId: task.symbolId,
@@ -269,8 +304,11 @@ async function resolveBriefsForV3(projectRoot, adapter, briefTasks, symbols, opt
             declHash: task.declHash,
             implHash: hashContent(`${task.signature}\n${impl.implementation ?? ""}`),
             brief: briefResult.brief,
+            declLine: task.declLine,
+            implLine: task.implLine,
             pathModuleHint: task.pathModuleHint,
-            tags: mergedTags
+            baseTags: task.baseTags || [],
+            semanticTags
         };
         briefDone += 1;
         if (briefDone % 10 === 0 || briefDone === briefTotal) {
@@ -304,8 +342,11 @@ async function writeV3Outputs(outDir, symbols, fileHashes) {
         routingModules[group.clusterId] = group.symbols.map((symbol) => ({
             id: symbol.symbolId,
             declHash: symbol.declHash,
+            declLine: symbol.declLine,
+            implLine: symbol.implLine,
             filePath: symbol.filePath,
-            tags: symbol.tags
+            tagsBase: symbol.baseTags,
+            tagsSemantic: symbol.semanticTags
         }));
     }
     const routing = (0, routingStore_1.buildRoutingFromModules)(routingModules);

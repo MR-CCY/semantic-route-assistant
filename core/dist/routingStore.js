@@ -19,6 +19,8 @@ function buildRoutingFromModules(moduleEntries) {
                 declLine: entry.declLine,
                 implLine: entry.implLine,
                 filePath: entry.filePath,
+                tagsBase: entry.tagsBase,
+                tagsSemantic: entry.tagsSemantic,
                 tags: entry.tags
             };
         }

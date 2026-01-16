@@ -83,7 +83,7 @@ function countOccurrences(haystack, needle) {
 function parseModuleEntries(content) {
     const entries = new Map();
     const lines = content.split("\n");
-    const entryRegex = /^\s*-\s+`([^`]+)`\s*<!--\s*id:\s*([^|]+)\s*\|\s*hash:\s*([^\s|]+)(?:\s*\|\s*file:\s*([^|]+))?(?:\s*\|\s*tags:\s*\[([^\]]*)\])?\s*-->/;
+    const entryRegex = /^\s*-\s+`([^`]+)`\s*<!--\s*id:\s*([^|]+)\s*\|\s*hash:\s*([^\s|]+)(?:\s*\|\s*impl:\s*([^\s|]+))?(?:\s*\|\s*file:\s*([^|]+))?(?:\s*\|\s*tags_base:\s*\[([^\]]*)\])?(?:\s*\|\s*tags_sem:\s*\[([^\]]*)\])?(?:\s*\|\s*tags:\s*\[([^\]]*)\])?\s*-->/;
     for (let i = 0; i < lines.length; i += 1) {
         const line = lines[i];
         const match = line.match(entryRegex);
@@ -209,10 +209,12 @@ async function searchSkillsV2(indexRoot, query) {
         const entry = entryMap.get(symbolId);
         const signature = entry?.signature ?? symbolId;
         const brief = entry?.brief ?? "";
-        const tags = (info.tags || []).map((tag) => tag.toLowerCase());
+        const tagsBase = (info.tagsBase || info.tags || []).map((tag) => tag.toLowerCase());
+        const tagsSemantic = (info.tagsSemantic || []).map((tag) => tag.toLowerCase());
+        const allTags = Array.from(new Set([...tagsSemantic, ...tagsBase]));
         const filePath = info.filePath;
         if (tagFilters.length > 0) {
-            const allMatch = tagFilters.every((tag) => tags.includes(tag));
+            const allMatch = tagFilters.every((tag) => allTags.includes(tag));
             if (!allMatch) {
                 continue;
             }
@@ -231,8 +233,11 @@ async function searchSkillsV2(indexRoot, query) {
             if (filePath && filePath.toLowerCase().includes(keyword)) {
                 score += 1;
             }
-            if (tags.some((tag) => tag.includes(keyword))) {
-                score += 3;
+            if (tagsSemantic.some((tag) => tag.includes(keyword))) {
+                score += 4;
+            }
+            if (tagsBase.some((tag) => tag.includes(keyword))) {
+                score += 1;
             }
             if (signature.toLowerCase().includes(keyword)) {
                 score += 1;
@@ -247,7 +252,7 @@ async function searchSkillsV2(indexRoot, query) {
                 module: info.module,
                 signature,
                 brief,
-                tags,
+                tags: allTags,
                 filePath,
                 score
             });
@@ -321,6 +326,919 @@ async function resolveIndexRoot(root) {
         }
         catch {
             return null;
+        }
+    }
+}
+async function buildEntryMapForRouting(indexRoot, routing) {
+    const entryMap = new Map();
+    for (const modulePath of Object.values(routing.modules)) {
+        const resolvedPath = path_1.default.join(indexRoot, modulePath);
+        try {
+            const content = await (0, promises_1.readFile)(resolvedPath, "utf8");
+            const parsed = parseModuleEntries(content);
+            for (const [id, entry] of parsed.entries()) {
+                entryMap.set(id, entry);
+            }
+        }
+        catch {
+            // ignore missing module files
+        }
+    }
+    return entryMap;
+}
+async function buildTagGraphData(indexRoot) {
+    const routing = await loadRouting(indexRoot);
+    if (!routing) {
+        return [];
+    }
+    const entryMap = await buildEntryMapForRouting(indexRoot, routing);
+    const tagMap = new Map();
+    for (const [symbolId, info] of Object.entries(routing.symbols)) {
+        const semanticTags = (info.tagsSemantic || []).map((tag) => tag.toLowerCase());
+        const baseTags = (info.tagsBase || info.tags || []).map((tag) => tag.toLowerCase());
+        const allTags = Array.from(new Set([...semanticTags, ...baseTags].filter(Boolean)));
+        const tags = semanticTags.length > 0 ? semanticTags : baseTags;
+        if (tags.length === 0) {
+            continue;
+        }
+        const entry = entryMap.get(symbolId);
+        const signature = entry?.signature ?? symbolId;
+        const brief = entry?.brief ?? "";
+        const line = info.declLine || info.implLine;
+        const item = {
+            id: symbolId,
+            signature,
+            brief,
+            tags: allTags,
+            filePath: info.filePath,
+            line,
+            module: info.module
+        };
+        const ensureTag = (tag, tagType) => {
+            if (!tag) {
+                return;
+            }
+            const existing = tagMap.get(tag);
+            if (!existing) {
+                tagMap.set(tag, { tagType, items: [item] });
+                return;
+            }
+            if (tagType === "semantic" && existing.tagType === "base") {
+                existing.tagType = "semantic";
+            }
+            existing.items.push(item);
+        };
+        for (const tag of semanticTags) {
+            ensureTag(tag, "semantic");
+        }
+        for (const tag of baseTags) {
+            ensureTag(tag, "base");
+        }
+    }
+    const nodes = [];
+    for (const [tag, entry] of tagMap.entries()) {
+        nodes.push({ tag, tagType: entry.tagType, count: entry.items.length, items: entry.items });
+    }
+    nodes.sort((a, b) => b.count - a.count);
+    return nodes;
+}
+function getNonce() {
+    let text = "";
+    const possible = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    for (let i = 0; i < 16; i += 1) {
+        text += possible.charAt(Math.floor(Math.random() * possible.length));
+    }
+    return text;
+}
+function getTagGraphHtml() {
+    const nonce = getNonce();
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    :root {
+      --bg: radial-gradient(1200px circle at 20% 10%, #2b1b4b 0%, #1b1032 40%, #120924 100%);
+      --panel: rgba(18, 9, 36, 0.6);
+      --text: #f7f4ff;
+      --muted: rgba(247, 244, 255, 0.65);
+      --accent: #7f5bff;
+      --bubble: rgba(102, 72, 200, 0.35);
+      --bubble-border: rgba(155, 120, 255, 0.7);
+      --list-height: 38%;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: "Avenir Next", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      height: 100vh;
+      overflow: hidden;
+    }
+    .layout {
+      display: grid;
+      grid-template-rows: 1fr var(--list-height);
+      height: 100%;
+    }
+    .bubble-zone {
+      position: relative;
+      overflow: hidden;
+      padding: 0;
+    }
+    #bubble-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      touch-action: none;
+      cursor: grab;
+    }
+    #bubble-canvas.panning {
+      cursor: grabbing;
+    }
+    .empty-hint {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-size: 12px;
+      pointer-events: none;
+    }
+    .search-bar {
+      position: absolute;
+      left: 50%;
+      top: 14px;
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      z-index: 2;
+      min-width: 420px;
+      pointer-events: none;
+    }
+    .search-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: rgba(20, 12, 36, 0.85);
+      border-radius: 999px;
+      padding: 6px 12px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      pointer-events: auto;
+    }
+    .search-row input {
+      flex: 1;
+      min-width: 220px;
+      background: transparent;
+      border: none;
+      color: var(--text);
+      font-size: 13px;
+      outline: none;
+    }
+    .search-actions {
+      display: flex;
+      gap: 6px;
+    }
+    .search-actions button {
+      padding: 4px 12px;
+      min-width: 56px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      background: rgba(127, 91, 255, 0.2);
+      color: var(--text);
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .search-actions button.active {
+      background: rgba(255, 211, 107, 0.2);
+      border-color: rgba(255, 211, 107, 0.7);
+    }
+    .suggestions {
+      width: 100%;
+      max-height: 180px;
+      overflow: auto;
+      background: rgba(20, 12, 36, 0.95);
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      display: none;
+      pointer-events: auto;
+    }
+    .suggestions.active {
+      display: block;
+    }
+    .suggestion {
+      padding: 8px 12px;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+    }
+    .suggestion:hover {
+      background: rgba(127, 91, 255, 0.2);
+    }
+    .list-zone {
+      position: relative;
+      background: var(--panel);
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      flex-direction: column;
+      padding: 8px 18px 14px;
+      gap: 8px;
+      overflow: hidden;
+    }
+    .list-header {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .list-meta {
+      font-size: 12px;
+      color: var(--muted);
+      text-align: center;
+    }
+    .selected-tags {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .tag-chip {
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      border: 1px solid rgba(255,255,255,0.2);
+      color: var(--muted);
+      cursor: pointer;
+      transition: color 0.2s ease, border-color 0.2s ease;
+      background: rgba(255,255,255,0.04);
+    }
+    .tag-chip:hover {
+      color: var(--text);
+      border-color: var(--accent);
+    }
+    .list {
+      overflow: auto;
+      display: grid;
+      gap: 10px;
+      padding-bottom: 6px;
+      justify-items: center;
+    }
+    .item {
+      padding: 10px 12px;
+      background: rgba(255,255,255,0.06);
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.08);
+      cursor: pointer;
+      transition: border 0.2s ease;
+      width: 100%;
+      max-width: 920px;
+      box-sizing: border-box;
+    }
+    .item:hover {
+      border-color: var(--accent);
+    }
+    .item .signature {
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1.35;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .item .brief {
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .tag-row {
+      margin-top: 6px;
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    @media (max-width: 900px) {
+      .layout { grid-template-rows: 1fr 45%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <div class="bubble-zone">
+      <canvas id="bubble-canvas"></canvas>
+      <div class="empty-hint" id="empty-hint">暂无标签数据，请先构建索引。</div>
+      <div class="search-bar">
+        <div class="search-row">
+          <input id="search-input" placeholder="搜索标签…" />
+          <div class="search-actions" id="filter-actions">
+            <button data-filter="all" class="active">全部</button>
+            <button data-filter="base">基础</button>
+            <button data-filter="semantic">语义</button>
+          </div>
+        </div>
+        <div class="suggestions" id="suggestions"></div>
+      </div>
+    </div>
+    <div class="list-zone">
+      <div class="list-header">
+        <div class="list-meta" id="panel-meta">请选择一个或多个标签</div>
+        <div class="selected-tags" id="selected-tags"></div>
+      </div>
+      <div class="list" id="list"></div>
+    </div>
+  </div>
+  <script nonce="${nonce}">
+    const vscode = acquireVsCodeApi();
+    const bubbleZone = document.querySelector('.bubble-zone');
+    const canvas = document.getElementById('bubble-canvas');
+    const ctx = canvas.getContext('2d');
+    const emptyHint = document.getElementById('empty-hint');
+    const list = document.getElementById('list');
+    const panelMeta = document.getElementById('panel-meta');
+    const selectedTagsEl = document.getElementById('selected-tags');
+    const searchInput = document.getElementById('search-input');
+    const suggestions = document.getElementById('suggestions');
+    const filterActions = document.getElementById('filter-actions');
+    let tagData = [];
+    let selectedTags = [];
+    let activeFilter = 'all';
+    let layout = null;
+    let hoverTag = null;
+    let rafId = 0;
+    let canvasWidth = 0;
+    let canvasHeight = 0;
+    const view = {
+      scale: 1,
+      offsetX: 0,
+      offsetY: 0
+    };
+    const pointers = new Map();
+    let isPanning = false;
+    let dragStart = null;
+    let pressedTag = null;
+    let dragged = false;
+    let pinchStart = null;
+
+    function requestRender() {
+      if (rafId) return;
+      rafId = requestAnimationFrame(draw);
+    }
+
+    function resizeCanvas() {
+      const rect = bubbleZone.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      canvas.style.width = rect.width + 'px';
+      canvas.style.height = rect.height + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      canvasWidth = rect.width;
+      canvasHeight = rect.height;
+      if (layout) {
+        centerView();
+      }
+      requestRender();
+    }
+
+    function getFilteredTags() {
+      if (activeFilter === 'all') {
+        return tagData;
+      }
+      return tagData.filter((item) => item.tagType === activeFilter);
+    }
+
+    function buildLayout() {
+      const filtered = getFilteredTags();
+      if (!filtered.length) {
+        layout = null;
+        requestRender();
+        return;
+      }
+      const counts = filtered.map((item) => item.count);
+      const min = Math.min(...counts);
+      const max = Math.max(...counts);
+      const minDiameter = 56;
+      const maxDiameter = 150;
+      const diameterFor = (item) => {
+        const scale = max === min ? 0.5 : (item.count - min) / (max - min);
+        return minDiameter + scale * (maxDiameter - minDiameter);
+      };
+      const nodes = filtered.map((item) => ({
+        ...item,
+        radius: diameterFor(item) / 2,
+        x: 0,
+        y: 0
+      }));
+      nodes.sort((a, b) => b.radius - a.radius);
+      const centerNode = nodes[0];
+      const placed = [];
+      const map = new Map();
+      const rings = [];
+      const gap = Math.max(8, (centerNode ? centerNode.radius : 48) * 0.08);
+      const capacityFor = (radius, maxRadius) =>
+        Math.max(6, Math.floor((2 * Math.PI * radius) / (2 * maxRadius + gap)));
+      const ringFill = (ring, maxRadius) =>
+        (ring.items.length + 1) * (2 * maxRadius + gap) >
+        2 * Math.PI * ring.radius * 0.9;
+      if (centerNode) {
+        placed.push(centerNode);
+        map.set(centerNode.tag, centerNode);
+      }
+      for (let i = 1; i < nodes.length; i += 1) {
+        const node = nodes[i];
+        if (!rings.length) {
+          rings.push({
+            radius: (centerNode ? centerNode.radius : 0) + node.radius + gap,
+            maxRadius: node.radius,
+            items: [node]
+          });
+          continue;
+        }
+        const ring = rings[rings.length - 1];
+        const nextMax = Math.max(ring.maxRadius, node.radius);
+        const nextCap = capacityFor(ring.radius, nextMax);
+        if (node.radius > ring.maxRadius || ring.items.length + 1 > nextCap || ringFill(ring, nextMax)) {
+          const nextRadius = ring.radius + ring.maxRadius + node.radius + gap;
+          rings.push({
+            radius: nextRadius,
+            maxRadius: node.radius,
+            items: [node]
+          });
+        } else {
+          ring.items.push(node);
+          ring.maxRadius = nextMax;
+        }
+      }
+      rings.forEach((ring, ringIndex) => {
+        const count = ring.items.length;
+        const step = (Math.PI * 2) / Math.max(count, 1);
+        const offset = ringIndex * 0.35;
+        ring.items.forEach((node, i) => {
+          const angle = i * step + offset;
+          node.x = Math.cos(angle) * ring.radius;
+          node.y = Math.sin(angle) * ring.radius;
+          placed.push(node);
+          map.set(node.tag, node);
+        });
+      });
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      let maxNodeRadius = 0;
+      placed.forEach((node) => {
+        minX = Math.min(minX, node.x - node.radius);
+        maxX = Math.max(maxX, node.x + node.radius);
+        minY = Math.min(minY, node.y - node.radius);
+        maxY = Math.max(maxY, node.y + node.radius);
+        maxNodeRadius = Math.max(maxNodeRadius, node.radius);
+      });
+      const cellSize = (maxNodeRadius + gap) * 2;
+      const grid = new Map();
+      const cellKey = (x, y) =>
+        String(Math.floor(x / cellSize)) + "," + String(Math.floor(y / cellSize));
+      placed.forEach((node, index) => {
+        const key = cellKey(node.x, node.y);
+        let list = grid.get(key);
+        if (!list) {
+          list = [];
+          grid.set(key, list);
+        }
+        list.push(index);
+      });
+      layout = {
+        nodes: placed,
+        map,
+        grid,
+        gap,
+        cellSize,
+        bounds: { minX, minY, maxX, maxY }
+      };
+      centerView();
+      requestRender();
+    }
+
+    function centerView() {
+      if (!layout) return;
+      const { bounds } = layout;
+      const centerX = (bounds.minX + bounds.maxX) / 2;
+      const centerY = (bounds.minY + bounds.maxY) / 2;
+      view.offsetX = canvasWidth / 2 - centerX * view.scale;
+      view.offsetY = canvasHeight / 2 - centerY * view.scale;
+    }
+
+    function screenToWorld(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      const x = (clientX - rect.left - view.offsetX) / view.scale;
+      const y = (clientY - rect.top - view.offsetY) / view.scale;
+      return { x, y };
+    }
+
+    function findNodeAt(clientX, clientY) {
+      if (!layout) return null;
+      const { x, y } = screenToWorld(clientX, clientY);
+      const cellX = Math.floor(x / layout.cellSize);
+      const cellY = Math.floor(y / layout.cellSize);
+      for (let dx = -1; dx <= 1; dx += 1) {
+        for (let dy = -1; dy <= 1; dy += 1) {
+          const list = layout.grid.get(String(cellX + dx) + "," + String(cellY + dy));
+          if (!list) continue;
+          for (const idx of list) {
+            const node = layout.nodes[idx];
+            if (Math.hypot(x - node.x, y - node.y) <= node.radius) {
+              return node;
+            }
+          }
+        }
+      }
+      return null;
+    }
+
+    function drawBubble(node) {
+      const active = selectedTags.includes(node.tag);
+      const hovered = hoverTag === node.tag;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
+      if (active) {
+        ctx.fillStyle = 'rgba(127, 91, 255, 0.45)';
+      } else if (hovered) {
+        ctx.fillStyle = 'rgba(127, 91, 255, 0.3)';
+      } else {
+        ctx.fillStyle = 'rgba(102, 72, 200, 0.35)';
+      }
+      ctx.fill();
+      ctx.lineWidth = active || hovered ? 2 : 1.2;
+      ctx.strokeStyle = active ? '#ffd36b' : hovered ? 'rgba(255, 211, 107, 0.7)' : 'rgba(155, 120, 255, 0.7)';
+      ctx.stroke();
+
+      const label = node.tag.length > 14 ? node.tag.slice(0, 12) + '…' : node.tag;
+      const labelSize = Math.max(10, Math.min(18, node.radius * 0.28));
+      const countSize = Math.max(9, Math.min(16, node.radius * 0.22));
+      ctx.fillStyle = '#f7f4ff';
+      ctx.font =
+        "600 " + labelSize + 'px "Avenir Next", "PingFang SC", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, node.x, node.y - node.radius * 0.12);
+      ctx.fillStyle = 'rgba(247, 244, 255, 0.7)';
+      ctx.font =
+        "500 " + countSize + 'px "Avenir Next", "PingFang SC", sans-serif';
+      ctx.fillText(String(node.count), node.x, node.y + node.radius * 0.18);
+    }
+
+    function draw() {
+      rafId = 0;
+      ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+      if (!layout || !layout.nodes.length) {
+        emptyHint.style.display = 'flex';
+        return;
+      }
+      emptyHint.style.display = 'none';
+      ctx.save();
+      ctx.translate(view.offsetX, view.offsetY);
+      ctx.scale(view.scale, view.scale);
+      layout.nodes.forEach(drawBubble);
+      ctx.restore();
+    }
+
+    function updateList() {
+      list.innerHTML = '';
+      selectedTagsEl.innerHTML = '';
+      if (!selectedTags.length) {
+        panelMeta.textContent = '请选择一个或多个标签';
+        requestRender();
+        return;
+      }
+      selectedTags.forEach((tag) => {
+        const chip = document.createElement('span');
+        chip.className = 'tag-chip';
+        chip.textContent = '#' + tag;
+        chip.dataset.tag = tag;
+        chip.addEventListener('click', () => removeTag(tag));
+        selectedTagsEl.appendChild(chip);
+      });
+
+      const allItems = [];
+      selectedTags.forEach((tag) => {
+        const node = tagData.find((item) => item.tag === tag);
+        if (!node) return;
+        allItems.push(...node.items);
+      });
+      const uniqueMap = new Map();
+      allItems.forEach((item) => {
+        uniqueMap.set(item.id, item);
+      });
+      const filteredItems = Array.from(uniqueMap.values()).filter((item) =>
+        selectedTags.every((tag) => (item.tags || []).includes(tag))
+      );
+      panelMeta.textContent = filteredItems.length + ' 个符号';
+
+      filteredItems.forEach((item) => {
+        const el = document.createElement('div');
+        el.className = 'item';
+        const tags = (item.tags || [])
+          .map((tag) => '<span class="tag-chip" data-tag="' + tag + '">#' + tag + '</span>')
+          .join('');
+        el.innerHTML =
+          '<div class="signature">' + item.signature + '</div>' +
+          '<div class="brief">' + (item.brief || '') + '</div>' +
+          (tags ? '<div class="tag-row">' + tags + '</div>' : '');
+        el.addEventListener('click', () => {
+          vscode.postMessage({
+            type: 'open',
+            filePath: item.filePath,
+            line: item.line
+          });
+        });
+        list.appendChild(el);
+      });
+      wireTagChips(list);
+      requestRender();
+    }
+
+    function wireTagChips(container) {
+      container.querySelectorAll('.tag-chip').forEach((chip) => {
+        chip.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const tag = chip.getAttribute('data-tag');
+          if (!tag) return;
+          addTag(tag);
+        });
+      });
+    }
+
+    function toggleTag(tag) {
+      if (selectedTags.includes(tag)) {
+        removeTag(tag);
+        return;
+      }
+      addTag(tag);
+    }
+
+    function addTag(tag) {
+      if (!selectedTags.includes(tag)) {
+        selectedTags = [...selectedTags, tag];
+      }
+      updateList();
+      focusTag(tag);
+    }
+
+    function removeTag(tag) {
+      selectedTags = selectedTags.filter((item) => item !== tag);
+      updateList();
+    }
+
+    function focusTag(tag) {
+      if (!layout) return;
+      const node = layout.map.get(tag);
+      if (!node) return;
+      view.offsetX = canvasWidth / 2 - node.x * view.scale;
+      view.offsetY = canvasHeight / 2 - node.y * view.scale;
+      requestRender();
+    }
+
+    function zoomAt(clientX, clientY, nextScale) {
+      const rect = canvas.getBoundingClientRect();
+      const px = clientX - rect.left;
+      const py = clientY - rect.top;
+      const worldX = (px - view.offsetX) / view.scale;
+      const worldY = (py - view.offsetY) / view.scale;
+      view.scale = nextScale;
+      view.offsetX = px - worldX * view.scale;
+      view.offsetY = py - worldY * view.scale;
+      requestRender();
+    }
+
+    function updateSuggestions(value) {
+      const query = value.trim().toLowerCase();
+      suggestions.innerHTML = '';
+      if (!query) {
+        suggestions.classList.remove('active');
+        return;
+      }
+      const pool = getFilteredTags();
+      const matches = pool.filter((item) => item.tag.includes(query)).slice(0, 8);
+      if (!matches.length) {
+        suggestions.classList.remove('active');
+        return;
+      }
+      matches.forEach((node) => {
+        const el = document.createElement('div');
+        el.className = 'suggestion';
+        el.innerHTML = '<span>' + node.tag + '</span><span>' + node.count + '</span>';
+        el.addEventListener('click', () => {
+          addTag(node.tag);
+          searchInput.value = '';
+          suggestions.classList.remove('active');
+        });
+        suggestions.appendChild(el);
+      });
+      suggestions.classList.add('active');
+    }
+
+    window.addEventListener('message', (event) => {
+      const message = event.data;
+      if (message.type === 'data') {
+        tagData = message.tags || [];
+        buildLayout();
+        updateList();
+        updateSuggestions(searchInput.value || '');
+      }
+      if (message.type === 'status') {
+        panelMeta.textContent = message.text || '';
+      }
+    });
+
+    searchInput.addEventListener('input', (event) => {
+      updateSuggestions(event.target.value || '');
+    });
+
+    searchInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && searchInput.value.trim()) {
+        const value = searchInput.value.trim().toLowerCase();
+        const node = getFilteredTags().find((item) => item.tag === value);
+        if (node) {
+          addTag(node.tag);
+        }
+        searchInput.value = '';
+        suggestions.classList.remove('active');
+      }
+    });
+
+    filterActions.querySelectorAll('button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        filterActions.querySelectorAll('button').forEach((item) => item.classList.remove('active'));
+        btn.classList.add('active');
+        activeFilter = btn.dataset.filter || 'all';
+        buildLayout();
+        updateSuggestions(searchInput.value || '');
+      });
+    });
+
+    canvas.addEventListener('pointerdown', (event) => {
+      canvas.setPointerCapture(event.pointerId);
+      pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      dragged = false;
+      if (pointers.size === 2) {
+        const values = Array.from(pointers.values());
+        pinchStart = {
+          distance: Math.hypot(values[0].x - values[1].x, values[0].y - values[1].y),
+          scale: view.scale
+        };
+        return;
+      }
+      const hit = findNodeAt(event.clientX, event.clientY);
+      pressedTag = hit ? hit.tag : null;
+      if (!pressedTag) {
+        isPanning = true;
+        canvas.classList.add('panning');
+        dragStart = {
+          x: event.clientX,
+          y: event.clientY,
+          offsetX: view.offsetX,
+          offsetY: view.offsetY
+        };
+      }
+    });
+
+    canvas.addEventListener('pointermove', (event) => {
+      if (pointers.has(event.pointerId)) {
+        pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      }
+      if (pinchStart && pointers.size === 2) {
+        const values = Array.from(pointers.values());
+        const nextDistance = Math.hypot(values[0].x - values[1].x, values[0].y - values[1].y);
+        if (pinchStart.distance > 0) {
+          const nextScale = Math.min(2.6, Math.max(0.45, pinchStart.scale * (nextDistance / pinchStart.distance)));
+          const centerX = (values[0].x + values[1].x) / 2;
+          const centerY = (values[0].y + values[1].y) / 2;
+          zoomAt(centerX, centerY, nextScale);
+        }
+        return;
+      }
+      if (isPanning && dragStart) {
+        const dx = event.clientX - dragStart.x;
+        const dy = event.clientY - dragStart.y;
+        view.offsetX = dragStart.offsetX + dx;
+        view.offsetY = dragStart.offsetY + dy;
+        dragged = true;
+        requestRender();
+        return;
+      }
+      if (event.pointerType === 'mouse') {
+        const hit = findNodeAt(event.clientX, event.clientY);
+        const nextTag = hit ? hit.tag : null;
+        if (nextTag !== hoverTag) {
+          hoverTag = nextTag;
+          requestRender();
+        }
+      }
+    });
+
+    canvas.addEventListener('pointerup', (event) => {
+      pointers.delete(event.pointerId);
+      if (pinchStart && pointers.size < 2) {
+        pinchStart = null;
+      }
+      if (isPanning) {
+        isPanning = false;
+        canvas.classList.remove('panning');
+      }
+      if (pressedTag && !dragged) {
+        toggleTag(pressedTag);
+      }
+      pressedTag = null;
+      dragStart = null;
+    });
+
+    canvas.addEventListener('pointercancel', () => {
+      pointers.clear();
+      pinchStart = null;
+      isPanning = false;
+      pressedTag = null;
+      dragStart = null;
+      canvas.classList.remove('panning');
+    });
+
+    canvas.addEventListener('wheel', (event) => {
+      if (!event.ctrlKey && !event.metaKey) {
+        return;
+      }
+      event.preventDefault();
+      const delta = Math.max(-0.45, Math.min(0.45, -event.deltaY * 0.004));
+      const nextScale = Math.min(2.6, Math.max(0.45, view.scale * (1 + delta)));
+      zoomAt(event.clientX, event.clientY, nextScale);
+    }, { passive: false });
+
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+  </script>
+</body>
+</html>`;
+}
+class TagGraphViewProvider {
+    constructor(context) {
+        this.context = context;
+    }
+    async resolveWebviewView(view) {
+        this.view = view;
+        view.webview.options = { enableScripts: true };
+        view.webview.html = getTagGraphHtml();
+        view.webview.onDidReceiveMessage(async (message) => {
+            if (message.type === "refresh") {
+                await this.postData();
+            }
+            if (message.type === "open") {
+                await this.openLocation(message.filePath, message.line);
+            }
+        });
+        await this.postData();
+    }
+    reveal() {
+        if (this.view?.show) {
+            this.view.show?.(true);
+        }
+    }
+    async postData() {
+        const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!root) {
+            this.view?.webview.postMessage({
+                type: "status",
+                text: "未找到工作区目录。"
+            });
+            return;
+        }
+        const indexRoot = await resolveIndexRoot(root);
+        if (!indexRoot) {
+            this.view?.webview.postMessage({
+                type: "status",
+                text: "未找到索引目录，请先运行 Build/Update Index。"
+            });
+            return;
+        }
+        const tags = await buildTagGraphData(indexRoot);
+        this.view?.webview.postMessage({ type: "data", tags });
+    }
+    async openLocation(filePath, line) {
+        const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!root || !filePath) {
+            return;
+        }
+        const targetPath = path_1.default.join(root, filePath);
+        try {
+            const doc = await vscode.workspace.openTextDocument(targetPath);
+            const editor = await vscode.window.showTextDocument(doc, { preview: true });
+            const lineIndex = line ? Math.max(0, line - 1) : 0;
+            const position = new vscode.Position(lineIndex, 0);
+            editor.selection = new vscode.Selection(position, position);
+            editor.revealRange(new vscode.Range(position, position));
+        }
+        catch {
+            vscode.window.showErrorMessage("Semantic Route: 无法打开目标文件。");
         }
     }
 }
@@ -555,6 +1473,8 @@ async function configureLlm(context) {
     vscode.window.showInformationMessage(`Semantic Route: 已更新配置 ${edited.profile.label}。`);
 }
 function activate(context) {
+    const tagGraphProvider = new TagGraphViewProvider(context);
+    context.subscriptions.push(vscode.window.registerWebviewViewProvider("semanticRoute.tagGraph", tagGraphProvider));
     const configureCmd = vscode.commands.registerCommand("semanticRoute.configureLLM", async () => {
         await configureLlm(context);
     });
@@ -843,7 +1763,10 @@ function activate(context) {
         await vscode.env.clipboard.writeText(assembled);
         vscode.window.showInformationMessage(`Semantic Route: 已复制 Auto Skills（${picked.length} 条）。`);
     });
-    context.subscriptions.push(configureCmd, buildCmd, updateCmd, searchCmd, autoSkillsDocCmd, autoSkillsClipboardCmd);
+    const openTagGraphCmd = vscode.commands.registerCommand("semanticRoute.openTagGraph", () => {
+        tagGraphProvider.reveal();
+    });
+    context.subscriptions.push(configureCmd, buildCmd, updateCmd, searchCmd, autoSkillsDocCmd, autoSkillsClipboardCmd, openTagGraphCmd);
 }
 function deactivate() {
     // noop

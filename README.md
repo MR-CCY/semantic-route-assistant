@@ -19,11 +19,11 @@ Semantic Routing Code Assistant (SRCA)
 - 全内存构建管线：
   - scanSourceFiles -> extractSymbolsFromCode (tree-sitter-cpp)
   - extractImplementationForSymbol
-  - generateBriefForSymbol（LLM 或占位）
-  - 规则标签 + 标签聚合
+ - generateBriefForSymbol（LLM 或占位）
+  - 规则标签 + 语义标签聚合
   - 输出模块级 Markdown + routing.json
   - .meta.json（文件 hash 缓存）
-- Search Skill Blocks 支持标签过滤（#tag）。
+- Search Skill Blocks 支持标签过滤（#tag）；标签图谱使用 Canvas 2D，支持拖拽/缩放、标签筛选与跳转。
 - 语言适配层已抽象，C/C++ 为默认适配器。
 
 索引产物
@@ -39,6 +39,7 @@ VS Code 指令
 - Semantic Route: Build Index
 - Semantic Route: Update Index
 - Semantic Route: Search Skill Blocks
+- Semantic Route: Tag Graph（标签气泡图，支持筛选/搜索/跳转）
 
 LLM 配置
 - 通过 "Semantic Route: Configure LLM" 添加/编辑配置并选择使用。
@@ -85,11 +86,11 @@ Current features (V3)
   - scanSourceFiles -> extractSymbolsFromCode (tree-sitter-cpp)
   - extractImplementationForSymbol
   - generateBriefForSymbol (LLM or placeholder)
-  - rule-based tags + tag clustering
+  - rule-based tags + semantic tag clustering
   - module Markdown output
   - routing.json output
   - .meta.json (file hash cache)
-- Search Skill Blocks with tag filters (#tag).
+- Search Skill Blocks with tag filters (#tag); Tag Graph uses Canvas 2D with drag/zoom/filter and jump-to-location.
 - Language adapter layer (C/C++ is the default adapter).
 
 Index outputs
@@ -105,6 +106,7 @@ VS Code commands
 - Semantic Route: Build Index
 - Semantic Route: Update Index
 - Semantic Route: Search Skill Blocks
+- Semantic Route: Tag Graph (bubble view with filter/search/jump)
 
 LLM configuration
 - Use "Semantic Route: Configure LLM" to add/edit profiles and select one.

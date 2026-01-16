@@ -5,8 +5,11 @@ export type SymbolRecord = {
   implHash: string;
   brief: string;
   filePath: string;
+  declLine?: number;
+  implLine?: number;
   pathModuleHint: string;
-  tags: string[];
+  baseTags: string[];
+  semanticTags: string[];
 };
 
 export type Cluster = {

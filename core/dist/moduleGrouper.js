@@ -53,7 +53,10 @@ function naiveGroupByPath(symbols) {
 function buildTagFrequency(symbols) {
     const counts = new Map();
     for (const symbol of symbols) {
-        for (const tag of symbol.tags || []) {
+        const tags = symbol.semanticTags && symbol.semanticTags.length > 0
+            ? symbol.semanticTags
+            : symbol.baseTags || [];
+        for (const tag of tags) {
             const normalized = tag.trim().toLowerCase();
             if (!normalized) {
                 continue;
@@ -64,7 +67,10 @@ function buildTagFrequency(symbols) {
     return counts;
 }
 function choosePrimaryTag(symbol, tagCounts) {
-    const tags = (symbol.tags || []).map((tag) => tag.toLowerCase()).filter(Boolean);
+    const sourceTags = symbol.semanticTags && symbol.semanticTags.length > 0
+        ? symbol.semanticTags
+        : symbol.baseTags || [];
+    const tags = sourceTags.map((tag) => tag.toLowerCase()).filter(Boolean);
     if (tags.length === 0) {
         return null;
     }

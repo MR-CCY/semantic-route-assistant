@@ -12,7 +12,13 @@ const STOP_WORDS = new Set([
   "util",
   "utils",
   "helper",
-  "helpers"
+  "helpers",
+  "src",
+  "core",
+  "server",
+  "client",
+  "common",
+  "base"
 ]);
 
 function splitCamelAndSnake(value: string): string[] {
@@ -35,6 +41,37 @@ function pushTokens(set: Set<string>, tokens: string[], minLen: number): void {
     }
     set.add(normalized);
   }
+}
+
+function collectLowInfoTags(filePath: string, symbolId: string, baseTags: string[]): Set<string> {
+  const lowInfo = new Set<string>();
+  for (const tag of baseTags) {
+    const normalized = tag.trim().toLowerCase();
+    if (normalized) {
+      lowInfo.add(normalized);
+    }
+  }
+
+  const pathParts = filePath.split(/[\\/]+/);
+  for (const part of pathParts) {
+    const normalized = part.replace(/\.[a-z0-9]+$/i, "");
+    for (const token of splitCamelAndSnake(normalized)) {
+      if (token) {
+        lowInfo.add(token.toLowerCase());
+      }
+    }
+  }
+
+  const symbolParts = symbolId.split("::");
+  for (const part of symbolParts) {
+    for (const token of splitCamelAndSnake(part)) {
+      if (token) {
+        lowInfo.add(token.toLowerCase());
+      }
+    }
+  }
+
+  return lowInfo;
 }
 
 export function inferBaseTagsForSymbol(params: {
@@ -72,4 +109,39 @@ export function inferBaseTagsForSymbol(params: {
 
   const limited = Array.from(tags);
   return limited.slice(0, 8);
+}
+
+export function filterSemanticTags(params: {
+  semanticTags: string[];
+  baseTags: string[];
+  filePath: string;
+  symbolId: string;
+}): string[] {
+  const { semanticTags, baseTags, filePath, symbolId } = params;
+  const lowInfo = collectLowInfoTags(filePath, symbolId, baseTags);
+  const filtered: string[] = [];
+  const seen = new Set<string>();
+
+  for (const tag of semanticTags) {
+    const normalized = tag.trim().toLowerCase();
+    if (!normalized || normalized.length < 3) {
+      continue;
+    }
+    if (STOP_WORDS.has(normalized)) {
+      continue;
+    }
+    if (lowInfo.has(normalized)) {
+      continue;
+    }
+    if (seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    filtered.push(normalized);
+    if (filtered.length >= 5) {
+      break;
+    }
+  }
+
+  return filtered;
 }

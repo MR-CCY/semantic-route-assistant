@@ -8,7 +8,7 @@ import { loadMeta, saveMeta, Meta } from "./metaStore";
 import { hashSignature, normalizeSignature } from "./signatureUtils";
 import { Cluster, SymbolRecord } from "./v3Types";
 import { groupSymbolsToModulesWithLLM } from "./moduleGrouper";
-import { inferBaseTagsForSymbol } from "./tagUtils";
+import { filterSemanticTags, inferBaseTagsForSymbol } from "./tagUtils";
 import { getLanguageAdapter, LanguageAdapter } from "./language";
 
 function hashContent(content: string): string {
@@ -54,14 +54,15 @@ function buildMeta(fileHashes: Record<string, string>): Meta {
 }
 
 const ENTRY_REGEX =
-  /^\s*-\s+`([^`]+)`\s*<!--\s*id:\s*([^|]+)\s*\|\s*hash:\s*([^\s|]+)(?:\s*\|\s*impl:\s*([^\s|]+))?(?:\s*\|\s*file:\s*([^|]+))?(?:\s*\|\s*tags:\s*\[([^\]]*)\])?\s*-->/;
+  /^\s*-\s+`([^`]+)`\s*<!--\s*id:\s*([^|]+)\s*\|\s*hash:\s*([^\s|]+)(?:\s*\|\s*impl:\s*([^\s|]+))?(?:\s*\|\s*file:\s*([^|]+))?(?:\s*\|\s*tags_base:\s*\[([^\]]*)\])?(?:\s*\|\s*tags_sem:\s*\[([^\]]*)\])?(?:\s*\|\s*tags:\s*\[([^\]]*)\])?\s*-->/;
 
 type ExistingEntry = {
   signature: string;
   declHash: string;
   implHash?: string;
   brief: string;
-  tags: string[];
+  baseTags: string[];
+  semanticTags: string[];
   filePath?: string;
 };
 
@@ -80,9 +81,23 @@ function parseModuleEntries(content: string): Map<string, ExistingEntry> {
     const declHash = match[3].trim();
     const implHash = match[4]?.trim();
     const filePath = match[5]?.trim();
-    const tagsRaw = match[6];
-    const tags = tagsRaw
-      ? tagsRaw
+    const baseTagsRaw = match[6];
+    const semanticTagsRaw = match[7];
+    const legacyTagsRaw = match[8];
+    const baseTags = baseTagsRaw
+      ? baseTagsRaw
+          .split(",")
+          .map((tag) => tag.trim().toLowerCase())
+          .filter(Boolean)
+      : [];
+    const semanticTags = semanticTagsRaw
+      ? semanticTagsRaw
+          .split(",")
+          .map((tag) => tag.trim().toLowerCase())
+          .filter(Boolean)
+      : [];
+    const legacyTags = legacyTagsRaw
+      ? legacyTagsRaw
           .split(",")
           .map((tag) => tag.trim().toLowerCase())
           .filter(Boolean)
@@ -102,7 +117,8 @@ function parseModuleEntries(content: string): Map<string, ExistingEntry> {
       declHash,
       implHash,
       brief,
-      tags,
+      baseTags: baseTags,
+      semanticTags: semanticTags.length > 0 ? semanticTags : legacyTags,
       filePath
     });
     i = j - 1;
@@ -169,11 +185,17 @@ function renderModuleGroup(group: Cluster): string {
   const ordered = [...group.symbols].sort((a, b) => a.signature.localeCompare(b.signature));
   for (const symbol of ordered) {
     const normalized = normalizeSignature(symbol.signature);
-    const tagList = (symbol.tags || []).map((tag) => tag.toLowerCase().trim()).filter(Boolean);
-    const tagSegment = tagList.length > 0 ? ` | tags: [${tagList.join(", ")}]` : "";
+    const baseTags = (symbol.baseTags || []).map((tag) => tag.toLowerCase().trim()).filter(Boolean);
+    const semanticTags = (symbol.semanticTags || [])
+      .map((tag) => tag.toLowerCase().trim())
+      .filter(Boolean);
+    const baseSegment =
+      baseTags.length > 0 ? ` | tags_base: [${baseTags.join(", ")}]` : "";
+    const semSegment =
+      semanticTags.length > 0 ? ` | tags_sem: [${semanticTags.join(", ")}]` : "";
     const implSegment = symbol.implHash ? ` | impl: ${symbol.implHash}` : "";
     lines.push(
-      `- \`${normalized}\` <!-- id: ${symbol.symbolId} | hash: ${symbol.declHash}${implSegment} | file: ${symbol.filePath}${tagSegment} -->`
+      `- \`${normalized}\` <!-- id: ${symbol.symbolId} | hash: ${symbol.declHash}${implSegment} | file: ${symbol.filePath}${baseSegment}${semSegment} -->`
     );
     lines.push(`  ${symbol.brief}`);
     lines.push("");
@@ -219,6 +241,8 @@ async function collectSymbolsForV3(
     signature: string;
     symbolId: string;
     declHash: string;
+    declLine?: number;
+    implLine?: number;
     pathModuleHint: string;
     baseTags: string[];
   }>;
@@ -231,6 +255,8 @@ async function collectSymbolsForV3(
     signature: string;
     symbolId: string;
     declHash: string;
+    declLine?: number;
+    implLine?: number;
     pathModuleHint: string;
     baseTags: string[];
   }> = [];
@@ -243,6 +269,8 @@ async function collectSymbolsForV3(
       symbolId: string;
       declHash: string;
       implHash: string;
+      declLine?: number;
+      implLine?: number;
       pathModuleHint: string;
       baseTags: string[];
       priority: number;
@@ -268,6 +296,8 @@ async function collectSymbolsForV3(
       const declHash = hashSignature(normalizedSignature);
       const pathModuleHint = adapter.inferPathModuleHint(relativePath);
       const rawId = symbol.id;
+      const declLine = symbol.declLine;
+      const implLine = symbol.implLine;
       const parts = rawId.split("::").filter(Boolean);
       const qualifierDepth = parts.length;
       const canonicalId =
@@ -296,6 +326,8 @@ async function collectSymbolsForV3(
           symbolId,
           declHash,
           implHash,
+          declLine,
+          implLine,
           pathModuleHint,
           baseTags,
           priority,
@@ -314,6 +346,8 @@ async function collectSymbolsForV3(
       existing.implHash === candidate.implHash;
 
     if (canReuse) {
+      const baseTags = existing.baseTags.length > 0 ? existing.baseTags : candidate.baseTags;
+      const semanticTags = existing.semanticTags.length > 0 ? existing.semanticTags : [];
       symbols.push({
         symbolId: candidate.symbolId,
         signature: candidate.signature,
@@ -321,8 +355,11 @@ async function collectSymbolsForV3(
         implHash: candidate.implHash,
         brief: existing.brief,
         filePath: candidate.filePath,
+        declLine: candidate.declLine,
+        implLine: candidate.implLine,
         pathModuleHint: candidate.pathModuleHint,
-        tags: existing.tags.length > 0 ? existing.tags : candidate.baseTags
+        baseTags,
+        semanticTags
       });
       continue;
     }
@@ -332,6 +369,8 @@ async function collectSymbolsForV3(
       signature: candidate.signature,
       symbolId: candidate.symbolId,
       declHash: candidate.declHash,
+      declLine: candidate.declLine,
+      implLine: candidate.implLine,
       pathModuleHint: candidate.pathModuleHint,
       baseTags: candidate.baseTags
     });
@@ -348,6 +387,8 @@ async function resolveBriefsForV3(
     signature: string;
     symbolId: string;
     declHash: string;
+    declLine?: number;
+    implLine?: number;
     pathModuleHint: string;
     baseTags: string[];
   }>,
@@ -373,9 +414,12 @@ async function resolveBriefsForV3(
       implementation: impl.implementation ?? undefined,
       filePath: task.filePath
     });
-    const mergedTags = Array.from(
-      new Set([...(task.baseTags || []), ...(briefResult.tags || [])])
-    );
+    const semanticTags = filterSemanticTags({
+      semanticTags: briefResult.tags || [],
+      baseTags: task.baseTags || [],
+      filePath: task.filePath,
+      symbolId: task.symbolId
+    });
     const result: SymbolRecord = {
       filePath: task.filePath,
       symbolId: task.symbolId,
@@ -383,8 +427,11 @@ async function resolveBriefsForV3(
       declHash: task.declHash,
       implHash: hashContent(`${task.signature}\n${impl.implementation ?? ""}`),
       brief: briefResult.brief,
+      declLine: task.declLine,
+      implLine: task.implLine,
       pathModuleHint: task.pathModuleHint,
-      tags: mergedTags
+      baseTags: task.baseTags || [],
+      semanticTags
     };
     briefDone += 1;
     if (briefDone % 10 === 0 || briefDone === briefTotal) {
@@ -409,7 +456,15 @@ async function writeV3Outputs(
 
   const routingModules: Record<
     string,
-    Array<{ id: string; declHash: string; filePath?: string; tags?: string[] }>
+    Array<{
+      id: string;
+      declHash: string;
+      declLine?: number;
+      implLine?: number;
+      filePath?: string;
+      tagsBase?: string[];
+      tagsSemantic?: string[];
+    }>
   > = {};
 
   for (const relPath of existingModules) {
@@ -429,8 +484,11 @@ async function writeV3Outputs(
     routingModules[group.clusterId] = group.symbols.map((symbol) => ({
       id: symbol.symbolId,
       declHash: symbol.declHash,
+      declLine: symbol.declLine,
+      implLine: symbol.implLine,
       filePath: symbol.filePath,
-      tags: symbol.tags
+      tagsBase: symbol.baseTags,
+      tagsSemantic: symbol.semanticTags
     }));
   }
 
