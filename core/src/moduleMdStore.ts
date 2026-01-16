@@ -8,6 +8,7 @@ export type ModuleEntry = {
   signature: string;
   declHash: string;
   brief: string;
+  tags?: string[];
   rawLines?: string[];
 };
 
@@ -18,7 +19,31 @@ type ParsedModule = {
 };
 
 const ENTRY_REGEX =
-  /^\s*-\s+`([^`]+)`\s*<!--\s*id:\s*([^|]+)\s*\|\s*hash:\s*([^\s]+)\s*-->/;
+  /^\s*-\s+`([^`]+)`\s*<!--\s*id:\s*([^|]+)\s*\|\s*hash:\s*([^\s|]+)(?:\s*\|\s*file:\s*([^|]+))?(?:\s*\|\s*tags:\s*\[([^\]]*)\])?\s*-->/;
+const BRIEF_CONCURRENCY = 4;
+
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  async function runNext(): Promise<void> {
+    const current = nextIndex;
+    if (current >= items.length) {
+      return;
+    }
+    nextIndex += 1;
+    results[current] = await worker(items[current], current);
+    await runNext();
+  }
+
+  const runners = Array.from({ length: Math.min(limit, items.length) }, () => runNext());
+  await Promise.all(runners);
+  return results;
+}
 
 function parseModuleMarkdown(content: string): ParsedModule {
   const lines = content.split("\n");
@@ -58,6 +83,13 @@ function parseModuleMarkdown(content: string): ParsedModule {
     const signature = match[1].trim();
     const id = match[2].trim();
     const declHash = match[3].trim();
+    const tagsRaw = match[5];
+    const tags = tagsRaw
+      ? tagsRaw
+          .split(",")
+          .map((tag) => tag.trim().toLowerCase())
+          .filter(Boolean)
+      : [];
 
     let end = index + 1;
     while (end < lines.length && !lines[end].startsWith("## ") && !ENTRY_REGEX.test(lines[end])) {
@@ -74,6 +106,7 @@ function parseModuleMarkdown(content: string): ParsedModule {
       signature,
       declHash,
       brief,
+      tags,
       rawLines
     };
 
@@ -100,7 +133,13 @@ function renderEntries(entries: ModuleEntry[]): string[] {
       lines.push(...entry.rawLines);
     } else {
       const brief = entry.brief || "TODO: brief description";
-      lines.push(`- \`${entry.signature}\` <!-- id: ${entry.id} | hash: ${entry.declHash} -->`);
+      const tags = (entry.tags || [])
+        .map((tag) => tag.toLowerCase().trim())
+        .filter(Boolean);
+      const tagSegment = tags.length > 0 ? ` | tags: [${tags.join(", ")}]` : "";
+      lines.push(
+        `- \`${entry.signature}\` <!-- id: ${entry.id} | hash: ${entry.declHash}${tagSegment} -->`
+      );
       lines.push(`  ${brief}`);
     }
     lines.push("");
@@ -152,14 +191,17 @@ export async function updateModuleMarkdown(params: {
   const functionEntries: ModuleEntry[] = [];
   const classEntries: ModuleEntry[] = [];
 
+  const briefsToGenerate: Array<{ moduleName: string; symbol: ExtractedSymbol }> = [];
+  const briefById = new Map<string, string>();
+
   for (const symbol of orderedSymbols) {
     const existingEntry = existingMap.get(symbol.id);
     if (existingEntry && existingEntry.declHash === symbol.declHash) {
-      const reusedEntry: ModuleEntry = {
-        ...existingEntry,
-        signature: existingEntry.signature || symbol.signature,
-        kind: symbol.kind
-      };
+    const reusedEntry: ModuleEntry = {
+      ...existingEntry,
+      signature: existingEntry.signature || symbol.signature,
+      kind: symbol.kind
+    };
       if (symbol.kind === "function") {
         functionEntries.push(reusedEntry);
       } else {
@@ -168,14 +210,33 @@ export async function updateModuleMarkdown(params: {
       continue;
     }
 
-    const brief = await generateBrief({ moduleName, symbol });
+    briefsToGenerate.push({ moduleName, symbol });
+  }
 
+  if (briefsToGenerate.length > 0) {
+    const results = await runWithConcurrency(briefsToGenerate, BRIEF_CONCURRENCY, async (item) => {
+      const brief = await generateBrief(item);
+      return { id: item.symbol.id, brief };
+    });
+    for (const result of results) {
+      briefById.set(result.id, result.brief);
+    }
+  }
+
+  for (const symbol of orderedSymbols) {
+    const existingEntry = existingMap.get(symbol.id);
+    if (existingEntry && existingEntry.declHash === symbol.declHash) {
+      continue;
+    }
+
+    const brief = briefById.get(symbol.id) || "";
     const freshEntry: ModuleEntry = {
       id: symbol.id,
       kind: symbol.kind,
       signature: symbol.signature,
       declHash: symbol.declHash,
-      brief
+      brief,
+      tags: (symbol as { tags?: string[] }).tags
     };
 
     if (symbol.kind === "function") {

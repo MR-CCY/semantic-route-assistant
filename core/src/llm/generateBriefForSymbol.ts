@@ -1,3 +1,5 @@
+import { callOpenAICompatible, OpenAICompatPayload, resolveBaseUrl } from "./openaiCompat";
+
 export interface BriefInput {
   moduleName: string;
   signature: string;
@@ -5,53 +7,74 @@ export interface BriefInput {
   filePath?: string;
 }
 
-type OpenAICompatPayload = {
-  model: string;
-  temperature: number;
-  max_tokens: number;
-  messages: Array<{ role: "system" | "user"; content: string }>;
+export type BriefResult = {
+  brief: string;
+  tags: string[];
 };
 
-async function callOpenAICompatible(params: {
-  apiKey: string;
-  baseUrl: string;
-  payload: OpenAICompatPayload;
-}): Promise<string | null> {
-  const { apiKey, baseUrl, payload } = params;
-  const url = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
-
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(payload)
-  });
-
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(`LLM request failed: ${response.status} ${text}`);
+function extractJson(text: string): string | null {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) {
+    return null;
   }
-
-  const data = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
-  return data.choices?.[0]?.message?.content?.trim() ?? null;
+  return text.slice(start, end + 1);
 }
 
-export async function generateBriefForSymbol(input: BriefInput): Promise<string> {
+function normalizeTags(tags: string[]): string[] {
+  const unique = new Set<string>();
+  for (const tag of tags) {
+    const normalized = tag.trim().toLowerCase();
+    if (!normalized) {
+      continue;
+    }
+    unique.add(normalized);
+    if (unique.size >= 3) {
+      break;
+    }
+  }
+  return Array.from(unique);
+}
+
+const DEFAULT_SYSTEM_PROMPT =
+  "你是一个 C++ 项目的代码审查助手。根据给定的函数签名和实现，返回 JSON：{brief, tags}。" +
+  "brief 为一句话功能描述（不超过 40 个字），准确、不幻想；tags 为 1-3 个短标签，" +
+  "全小写字母/数字/下划线，避免过于泛化的词。只返回 JSON，不要额外文本。";
+
+const DEFAULT_USER_PROMPT = [
+  "moduleName: {{moduleName}}",
+  "signature: {{signature}}",
+  "implementation:",
+  "```cpp",
+  "{{implementation}}",
+  "```"
+].join("\n");
+
+function renderUserPrompt(input: BriefInput, implNote: string): string {
+  const template = process.env.SRCA_LLM_USER_PROMPT || "";
+  const raw = template.trim() ? template : DEFAULT_USER_PROMPT;
+  return raw
+    .split("{{moduleName}}")
+    .join(input.moduleName)
+    .split("{{signature}}")
+    .join(input.signature)
+    .split("{{implementation}}")
+    .join(implNote);
+}
+
+export async function generateBriefAndTagsForSymbol(input: BriefInput): Promise<BriefResult> {
   const provider = process.env.SRCA_LLM_PROVIDER;
   const apiKey = process.env.SRCA_LLM_API_KEY;
   const model = process.env.SRCA_LLM_MODEL || "gpt-4o-mini";
   const baseUrl = process.env.SRCA_LLM_BASE_URL || "";
+  const systemPrompt = process.env.SRCA_LLM_SYSTEM_PROMPT?.trim() || DEFAULT_SYSTEM_PROMPT;
 
   if (!provider) {
-    return `自动生成描述: ${input.signature}`;
+    return { brief: `自动生成描述: ${input.signature}`, tags: [] };
   }
 
   if (!apiKey) {
-    return `自动生成描述: ${input.signature}`;
+    return { brief: `自动生成描述: ${input.signature}`, tags: [] };
   }
 
   const hasImpl = Boolean(input.implementation && input.implementation.trim());
@@ -60,35 +83,26 @@ export async function generateBriefForSymbol(input: BriefInput): Promise<string>
   const payload: OpenAICompatPayload = {
     model,
     temperature: 0.2,
-    max_tokens: 64,
+    max_tokens: 96,
     messages: [
       {
         role: "system",
-        content:
-          "你是一个 C++ 项目的代码审查助手。根据给定的函数签名和实现，生成一条简短的一句话功能描述。要求：不超过 40 个字，准确，不幻想不存在的参数或行为，可以提到关键前置条件，不要输出多行，不要加项目符号。"
+        content: systemPrompt
       },
       {
         role: "user",
-        content: [
-          `moduleName: ${input.moduleName}`,
-          `signature: ${input.signature}`,
-          `implementation:\n\`\`\`cpp\n${implNote}\n\`\`\``
-        ].join("\n")
+        content: renderUserPrompt(input, implNote)
       }
     ]
   };
 
   try {
-    let resolvedBaseUrl = baseUrl;
-    if (provider === "openai" && !resolvedBaseUrl) {
-      resolvedBaseUrl = "https://api.openai.com/v1";
-    }
-
+    const resolvedBaseUrl = resolveBaseUrl(provider, baseUrl);
     if (!resolvedBaseUrl) {
       console.warn(
         `[generateBriefForSymbol] 未配置 SRCA_LLM_BASE_URL，无法调用 ${provider}。`
       );
-      return `自动生成描述: ${input.signature}`;
+      return { brief: `自动生成描述: ${input.signature}`, tags: [] };
     }
 
     const text = await callOpenAICompatible({
@@ -97,7 +111,21 @@ export async function generateBriefForSymbol(input: BriefInput): Promise<string>
       payload
     });
     if (text) {
-      return text;
+      const jsonText = extractJson(text);
+      if (jsonText) {
+        try {
+          const parsed = JSON.parse(jsonText) as { brief?: string; tags?: string[] };
+          if (parsed?.brief) {
+            return {
+              brief: parsed.brief.trim(),
+              tags: normalizeTags(parsed.tags || [])
+            };
+          }
+        } catch {
+          // fall through to plain text
+        }
+      }
+      return { brief: text, tags: [] };
     }
   } catch (error) {
     console.warn(
@@ -106,5 +134,10 @@ export async function generateBriefForSymbol(input: BriefInput): Promise<string>
     );
   }
 
-  return `自动生成描述: ${input.signature}`;
+  return { brief: `自动生成描述: ${input.signature}`, tags: [] };
+}
+
+export async function generateBriefForSymbol(input: BriefInput): Promise<string> {
+  const result = await generateBriefAndTagsForSymbol(input);
+  return result.brief;
 }

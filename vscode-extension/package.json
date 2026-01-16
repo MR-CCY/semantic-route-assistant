@@ -13,7 +13,6 @@
   "activationEvents": [
     "onCommand:semanticRoute.buildIndex",
     "onCommand:semanticRoute.configureLLM",
-    "onCommand:semanticRoute.toggleLLM",
     "onCommand:semanticRoute.updateIndex",
     "onCommand:semanticRoute.searchSkills"
   ],
@@ -23,10 +22,6 @@
       {
         "command": "semanticRoute.configureLLM",
         "title": "Semantic Route: Configure LLM"
-      },
-      {
-        "command": "semanticRoute.toggleLLM",
-        "title": "Semantic Route: Toggle LLM"
       },
       {
         "command": "semanticRoute.buildIndex",
@@ -47,22 +42,73 @@
         "semanticRoute.llm.provider": {
           "type": "string",
           "default": "",
-          "description": "LLM provider (openai/qwen/gemini). Empty disables LLM."
+          "description": "LLM 提供方（openai/qwen/gemini）。留空将禁用 LLM。"
+        },
+        "semanticRoute.llm.activeProfile": {
+          "type": "string",
+          "default": "",
+          "description": "当前启用的 LLM 配置 ID。"
+        },
+        "semanticRoute.llm.profiles": {
+          "type": "array",
+          "default": [],
+          "description": "LLM 配置列表（由 Configure LLM 命令管理）。",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "baseUrl": {
+                "type": "string"
+              },
+              "systemPrompt": {
+                "type": "string"
+              },
+              "userPrompt": {
+                "type": "string"
+              }
+            }
+          }
         },
         "semanticRoute.llm.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable or disable LLM usage."
+          "description": "启用或禁用 LLM。"
         },
         "semanticRoute.llm.model": {
           "type": "string",
           "default": "",
-          "description": "LLM model name."
+          "description": "LLM 模型名称。"
+        },
+        "semanticRoute.llm.briefConcurrency": {
+          "type": "number",
+          "default": 4,
+          "description": "生成 brief 时的并发数量。"
         },
         "semanticRoute.llm.baseUrl": {
           "type": "string",
           "default": "",
-          "description": "Optional API base URL for the provider."
+          "description": "可选的 API Base URL。"
+        },
+        "semanticRoute.llm.systemPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "可选的 System Prompt。"
+        },
+        "semanticRoute.llm.userPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "可选的 User Prompt 模板（支持占位符）。"
         }
       }
     }

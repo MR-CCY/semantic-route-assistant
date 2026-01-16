@@ -1,6 +1,6 @@
-import { createHash } from "crypto";
 import Parser from "tree-sitter";
 import Cpp from "tree-sitter-cpp";
+import { hashSignature, normalizeSignature } from "./signatureUtils";
 
 export type ExtractedSymbol = {
   id: string;
@@ -14,18 +14,6 @@ export type ExtractedSymbol = {
 
 const parser = new Parser();
 parser.setLanguage(Cpp);
-
-function normalizeSignature(signature: string): string {
-  return signature
-    .replace(/\s+/g, " ")
-    .replace(/\s*([(),*&<>:=])\s*/g, "$1")
-    .trim();
-}
-
-function hashSignature(signature: string): string {
-  const normalized = normalizeSignature(signature);
-  return createHash("sha1").update(normalized).digest("hex");
-}
 
 function getText(code: string, node: Parser.SyntaxNode): string {
   return code.slice(node.startIndex, node.endIndex);

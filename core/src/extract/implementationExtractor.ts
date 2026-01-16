@@ -127,6 +127,23 @@ function truncateImplementation(implementation: string): string {
   return truncated;
 }
 
+export function extractImplementationFromCode(
+  code: string,
+  signature: string
+): string | null {
+  const name = extractFunctionName(signature);
+  if (!name) {
+    return null;
+  }
+
+  const implementation = findImplementationBlock(code, name);
+  if (!implementation) {
+    return null;
+  }
+
+  return truncateImplementation(implementation);
+}
+
 export async function extractImplementationForSymbol(
   input: ImplementationInput
 ): Promise<ImplementationResult> {
@@ -138,15 +155,6 @@ export async function extractImplementationForSymbol(
     return { implementation: null };
   }
 
-  const name = extractFunctionName(input.signature);
-  if (!name) {
-    return { implementation: null };
-  }
-
-  const implementation = findImplementationBlock(code, name);
-  if (!implementation) {
-    return { implementation: null };
-  }
-
-  return { implementation: truncateImplementation(implementation) };
+  const implementation = extractImplementationFromCode(code, input.signature);
+  return { implementation };
 }

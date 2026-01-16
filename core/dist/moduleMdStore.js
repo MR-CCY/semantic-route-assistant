@@ -6,7 +6,24 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.updateModuleMarkdown = updateModuleMarkdown;
 const path_1 = __importDefault(require("path"));
 const promises_1 = require("fs/promises");
-const ENTRY_REGEX = /^\s*-\s+`([^`]+)`\s*<!--\s*id:\s*([^|]+)\s*\|\s*hash:\s*([^\s]+)\s*-->/;
+const ENTRY_REGEX = /^\s*-\s+`([^`]+)`\s*<!--\s*id:\s*([^|]+)\s*\|\s*hash:\s*([^\s|]+)(?:\s*\|\s*file:\s*([^|]+))?(?:\s*\|\s*tags:\s*\[([^\]]*)\])?\s*-->/;
+const BRIEF_CONCURRENCY = 4;
+async function runWithConcurrency(items, limit, worker) {
+    const results = new Array(items.length);
+    let nextIndex = 0;
+    async function runNext() {
+        const current = nextIndex;
+        if (current >= items.length) {
+            return;
+        }
+        nextIndex += 1;
+        results[current] = await worker(items[current], current);
+        await runNext();
+    }
+    const runners = Array.from({ length: Math.min(limit, items.length) }, () => runNext());
+    await Promise.all(runners);
+    return results;
+}
 function parseModuleMarkdown(content) {
     const lines = content.split("\n");
     const headerLines = [];
@@ -42,6 +59,13 @@ function parseModuleMarkdown(content) {
         const signature = match[1].trim();
         const id = match[2].trim();
         const declHash = match[3].trim();
+        const tagsRaw = match[5];
+        const tags = tagsRaw
+            ? tagsRaw
+                .split(",")
+                .map((tag) => tag.trim().toLowerCase())
+                .filter(Boolean)
+            : [];
         let end = index + 1;
         while (end < lines.length && !lines[end].startsWith("## ") && !ENTRY_REGEX.test(lines[end])) {
             end += 1;
@@ -55,6 +79,7 @@ function parseModuleMarkdown(content) {
             signature,
             declHash,
             brief,
+            tags,
             rawLines
         };
         if (section === "functions") {
@@ -78,7 +103,11 @@ function renderEntries(entries) {
         }
         else {
             const brief = entry.brief || "TODO: brief description";
-            lines.push(`- \`${entry.signature}\` <!-- id: ${entry.id} | hash: ${entry.declHash} -->`);
+            const tags = (entry.tags || [])
+                .map((tag) => tag.toLowerCase().trim())
+                .filter(Boolean);
+            const tagSegment = tags.length > 0 ? ` | tags: [${tags.join(", ")}]` : "";
+            lines.push(`- \`${entry.signature}\` <!-- id: ${entry.id} | hash: ${entry.declHash}${tagSegment} -->`);
             lines.push(`  ${brief}`);
         }
         lines.push("");
@@ -113,6 +142,8 @@ async function updateModuleMarkdown(params) {
     const orderedSymbols = Array.from(uniqueSymbols.values()).sort((a, b) => a.signature.localeCompare(b.signature));
     const functionEntries = [];
     const classEntries = [];
+    const briefsToGenerate = [];
+    const briefById = new Map();
     for (const symbol of orderedSymbols) {
         const existingEntry = existingMap.get(symbol.id);
         if (existingEntry && existingEntry.declHash === symbol.declHash) {
@@ -129,13 +160,30 @@ async function updateModuleMarkdown(params) {
             }
             continue;
         }
-        const brief = await generateBrief({ moduleName, symbol });
+        briefsToGenerate.push({ moduleName, symbol });
+    }
+    if (briefsToGenerate.length > 0) {
+        const results = await runWithConcurrency(briefsToGenerate, BRIEF_CONCURRENCY, async (item) => {
+            const brief = await generateBrief(item);
+            return { id: item.symbol.id, brief };
+        });
+        for (const result of results) {
+            briefById.set(result.id, result.brief);
+        }
+    }
+    for (const symbol of orderedSymbols) {
+        const existingEntry = existingMap.get(symbol.id);
+        if (existingEntry && existingEntry.declHash === symbol.declHash) {
+            continue;
+        }
+        const brief = briefById.get(symbol.id) || "";
         const freshEntry = {
             id: symbol.id,
             kind: symbol.kind,
             signature: symbol.signature,
             declHash: symbol.declHash,
-            brief
+            brief,
+            tags: symbol.tags
         };
         if (symbol.kind === "function") {
             functionEntries.push(freshEntry);

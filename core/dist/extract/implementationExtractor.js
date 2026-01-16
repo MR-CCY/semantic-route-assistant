@@ -3,6 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.extractImplementationFromCode = extractImplementationFromCode;
 exports.extractImplementationForSymbol = extractImplementationForSymbol;
 const path_1 = __importDefault(require("path"));
 const promises_1 = require("fs/promises");
@@ -108,6 +109,17 @@ function truncateImplementation(implementation) {
     }
     return truncated;
 }
+function extractImplementationFromCode(code, signature) {
+    const name = extractFunctionName(signature);
+    if (!name) {
+        return null;
+    }
+    const implementation = findImplementationBlock(code, name);
+    if (!implementation) {
+        return null;
+    }
+    return truncateImplementation(implementation);
+}
 async function extractImplementationForSymbol(input) {
     const fullPath = path_1.default.join(input.projectRoot, input.filePath);
     let code = "";
@@ -117,13 +129,6 @@ async function extractImplementationForSymbol(input) {
     catch {
         return { implementation: null };
     }
-    const name = extractFunctionName(input.signature);
-    if (!name) {
-        return { implementation: null };
-    }
-    const implementation = findImplementationBlock(code, name);
-    if (!implementation) {
-        return { implementation: null };
-    }
-    return { implementation: truncateImplementation(implementation) };
+    const implementation = extractImplementationFromCode(code, input.signature);
+    return { implementation };
 }
