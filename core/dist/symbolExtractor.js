@@ -4,21 +4,11 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.extractSymbolsFromCode = extractSymbolsFromCode;
-const crypto_1 = require("crypto");
 const tree_sitter_1 = __importDefault(require("tree-sitter"));
 const tree_sitter_cpp_1 = __importDefault(require("tree-sitter-cpp"));
+const signatureUtils_1 = require("./signatureUtils");
 const parser = new tree_sitter_1.default();
 parser.setLanguage(tree_sitter_cpp_1.default);
-function normalizeSignature(signature) {
-    return signature
-        .replace(/\s+/g, " ")
-        .replace(/\s*([(),*&<>:=])\s*/g, "$1")
-        .trim();
-}
-function hashSignature(signature) {
-    const normalized = normalizeSignature(signature);
-    return (0, crypto_1.createHash)("sha1").update(normalized).digest("hex");
-}
 function getText(code, node) {
     return code.slice(node.startIndex, node.endIndex);
 }
@@ -164,7 +154,7 @@ function withClassNameInSignature(signature, name, className) {
     return signature.replace(pattern, `${className}::${name}`);
 }
 function addFunctionSymbol(params) {
-    const signature = normalizeSignature(params.signature);
+    const signature = (0, signatureUtils_1.normalizeSignature)(params.signature);
     if (!signature) {
         return;
     }
@@ -172,7 +162,7 @@ function addFunctionSymbol(params) {
         id: params.id,
         kind: "function",
         signature,
-        declHash: hashSignature(signature),
+        declHash: (0, signatureUtils_1.hashSignature)(signature),
         filePath: params.filePath
     });
 }
@@ -201,12 +191,12 @@ function handleFunctionNode(node, code, filePath, className) {
     if (className) {
         id = name.includes("::") ? name : `${className}::${name}`;
     }
-    const normalizedSignature = normalizeSignature(withClassNameInSignature(finalized, name, className));
+    const normalizedSignature = (0, signatureUtils_1.normalizeSignature)(withClassNameInSignature(finalized, name, className));
     return {
         id,
         kind: "function",
         signature: normalizedSignature,
-        declHash: hashSignature(normalizedSignature),
+        declHash: (0, signatureUtils_1.hashSignature)(normalizedSignature),
         filePath,
         declLine: !isDefinition || headerFile ? line : undefined,
         implLine: isDefinition ? line : undefined
@@ -264,19 +254,29 @@ function extractSymbolsFromCode(code, filePath) {
             if (!className) {
                 return;
             }
-            const signature = `${node.type === "class_specifier" ? "class" : "struct"} ${className}`;
-            symbols.push({
-                id: className,
-                kind: "class",
-                signature: normalizeSignature(signature),
-                declHash: hashSignature(signature),
-                filePath,
-                declLine: node.startPosition.row + 1
-            });
+            // Skip forward declarations (no body)
             const body = node.childForFieldName("body") || findNamedChild(node, ["field_declaration_list"]);
             if (!body) {
                 return;
             }
+            // Build signature with inheritance info
+            const keyword = node.type === "class_specifier" ? "class" : "struct";
+            let signature = `${keyword} ${className}`;
+            // Find base_class_clause to include inheritance info
+            const baseClause = findNamedChild(node, ["base_class_clause"]);
+            if (baseClause) {
+                const baseText = getText(code, baseClause).trim();
+                signature = `${signature} ${baseText}`;
+            }
+            symbols.push({
+                id: className,
+                kind: "class",
+                signature: (0, signatureUtils_1.normalizeSignature)(signature),
+                declHash: (0, signatureUtils_1.hashSignature)(signature),
+                filePath,
+                declLine: node.startPosition.row + 1
+            });
+            // body is already checked above, no need to check again
             for (const child of body.namedChildren) {
                 if (child.type !== "field_declaration") {
                     continue;

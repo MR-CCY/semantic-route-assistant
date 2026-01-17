@@ -6,7 +6,10 @@ import { scanSourceFiles } from "./scanFiles";
 import { summarizeFile } from "./llmClient";
 import { loadMeta, saveMeta } from "./metaStore";
 import { searchSkills as searchSkillsImpl } from "./searchSkills";
+// v2: per-module md + routing.json (incremental)
 export { buildIndexV2, updateIndexV2 } from "./indexV2";
+// v3: in-memory clustering -> modules/*.md
+export { buildModuleIndexV3, updateModuleIndexV3 } from "./indexV3";
 
 export { summarizeFile } from "./llmClient";
 export { searchSkillsImpl as searchSkills };

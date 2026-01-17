@@ -11,6 +11,10 @@ export type RoutingJson = {
       declHash: string;
       declLine?: number;
       implLine?: number;
+      filePath?: string;
+      tagsBase?: string[];
+      tagsSemantic?: string[];
+      tags?: string[];
     };
   };
 };
@@ -18,7 +22,16 @@ export type RoutingJson = {
 export function buildRoutingFromModules(
   moduleEntries: Record<
     string,
-    Array<{ id: string; declHash: string; declLine?: number; implLine?: number }>
+    Array<{
+      id: string;
+      declHash: string;
+      declLine?: number;
+      implLine?: number;
+      filePath?: string;
+      tagsBase?: string[];
+      tagsSemantic?: string[];
+      tags?: string[];
+    }>
   >
 ): RoutingJson {
   const routing: RoutingJson = { modules: {}, symbols: {} };
@@ -30,7 +43,11 @@ export function buildRoutingFromModules(
         module: moduleName,
         declHash: entry.declHash,
         declLine: entry.declLine,
-        implLine: entry.implLine
+        implLine: entry.implLine,
+        filePath: entry.filePath,
+        tagsBase: entry.tagsBase,
+        tagsSemantic: entry.tagsSemantic,
+        tags: entry.tags
       };
     }
   }

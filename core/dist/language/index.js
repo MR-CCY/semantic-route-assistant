@@ -1,0 +1,20 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.registerLanguageAdapter = exports.getSupportedExtensions = exports.getAllAdapters = exports.getAdapterForFile = exports.getLanguageAdapter = void 0;
+const adapterRegistry_1 = require("./adapterRegistry");
+Object.defineProperty(exports, "registerLanguageAdapter", { enumerable: true, get: function () { return adapterRegistry_1.registerLanguageAdapter; } });
+Object.defineProperty(exports, "getLanguageAdapter", { enumerable: true, get: function () { return adapterRegistry_1.getLanguageAdapter; } });
+Object.defineProperty(exports, "getAdapterForFile", { enumerable: true, get: function () { return adapterRegistry_1.getAdapterForFile; } });
+Object.defineProperty(exports, "getAllAdapters", { enumerable: true, get: function () { return adapterRegistry_1.getAllAdapters; } });
+Object.defineProperty(exports, "getSupportedExtensions", { enumerable: true, get: function () { return adapterRegistry_1.getSupportedExtensions; } });
+const cppAdapter_1 = require("./cppAdapter");
+const javaAdapter_1 = require("./javaAdapter");
+const jsAdapter_1 = require("./jsAdapter");
+const pythonAdapter_1 = require("./pythonAdapter");
+const goAdapter_1 = require("./goAdapter");
+// Register all language adapters
+(0, adapterRegistry_1.registerLanguageAdapter)(cppAdapter_1.cppAdapter);
+(0, adapterRegistry_1.registerLanguageAdapter)(javaAdapter_1.javaAdapter);
+(0, adapterRegistry_1.registerLanguageAdapter)(jsAdapter_1.jsAdapter);
+(0, adapterRegistry_1.registerLanguageAdapter)(pythonAdapter_1.pythonAdapter);
+(0, adapterRegistry_1.registerLanguageAdapter)(goAdapter_1.goAdapter);

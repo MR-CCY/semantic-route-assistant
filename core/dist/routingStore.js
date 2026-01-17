@@ -17,7 +17,11 @@ function buildRoutingFromModules(moduleEntries) {
                 module: moduleName,
                 declHash: entry.declHash,
                 declLine: entry.declLine,
-                implLine: entry.implLine
+                implLine: entry.implLine,
+                filePath: entry.filePath,
+                tagsBase: entry.tagsBase,
+                tagsSemantic: entry.tagsSemantic,
+                tags: entry.tags
             };
         }
     }

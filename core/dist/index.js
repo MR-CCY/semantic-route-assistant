@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.searchSkills = exports.summarizeFile = exports.updateIndexV2 = exports.buildIndexV2 = void 0;
+exports.searchSkills = exports.summarizeFile = exports.updateModuleIndexV3 = exports.buildModuleIndexV3 = exports.updateIndexV2 = exports.buildIndexV2 = void 0;
 exports.buildIndex = buildIndex;
 exports.updateIndex = updateIndex;
 const path_1 = __importDefault(require("path"));
@@ -15,9 +15,14 @@ const llmClient_1 = require("./llmClient");
 const metaStore_1 = require("./metaStore");
 const searchSkills_1 = require("./searchSkills");
 Object.defineProperty(exports, "searchSkills", { enumerable: true, get: function () { return searchSkills_1.searchSkills; } });
+// v2: per-module md + routing.json (incremental)
 var indexV2_1 = require("./indexV2");
 Object.defineProperty(exports, "buildIndexV2", { enumerable: true, get: function () { return indexV2_1.buildIndexV2; } });
 Object.defineProperty(exports, "updateIndexV2", { enumerable: true, get: function () { return indexV2_1.updateIndexV2; } });
+// v3: in-memory clustering -> modules/*.md
+var indexV3_1 = require("./indexV3");
+Object.defineProperty(exports, "buildModuleIndexV3", { enumerable: true, get: function () { return indexV3_1.buildModuleIndexV3; } });
+Object.defineProperty(exports, "updateModuleIndexV3", { enumerable: true, get: function () { return indexV3_1.updateModuleIndexV3; } });
 var llmClient_2 = require("./llmClient");
 Object.defineProperty(exports, "summarizeFile", { enumerable: true, get: function () { return llmClient_2.summarizeFile; } });
 async function buildIndex(projectRoot, outDir) {
