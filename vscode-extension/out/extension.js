@@ -80,6 +80,16 @@ function countOccurrences(haystack, needle) {
     }
     return count;
 }
+async function hasModuleIndex(indexRoot) {
+    const modulesDir = path_1.default.join(indexRoot, "modules");
+    try {
+        const entries = await (0, promises_1.readdir)(modulesDir, { withFileTypes: true });
+        return entries.some((entry) => entry.isFile() && entry.name.endsWith(".md"));
+    }
+    catch {
+        return false;
+    }
+}
 function parseModuleEntries(content) {
     const entries = new Map();
     const lines = content.split("\n");
@@ -477,8 +487,23 @@ function getTagGraphHtml() {
       align-items: center;
       gap: 10px;
       z-index: 2;
-      min-width: 420px;
+      width: min(860px, 92vw);
+      min-width: 0;
       pointer-events: none;
+    }
+    .refresh-btn {
+      background: rgba(20, 12, 36, 0.85);
+      border-radius: 999px;
+      padding: 4px 12px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: var(--text);
+      font-size: 11px;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .refresh-btn:hover {
+      border-color: var(--accent);
     }
     .search-row {
       display: flex;
@@ -489,10 +514,12 @@ function getTagGraphHtml() {
       padding: 6px 12px;
       border: 1px solid rgba(255, 255, 255, 0.12);
       pointer-events: auto;
+      width: 100%;
+      box-sizing: border-box;
     }
     .search-row input {
-      flex: 1;
-      min-width: 220px;
+      flex: 1 1 auto;
+      min-width: 120px;
       background: transparent;
       border: none;
       color: var(--text);
@@ -502,6 +529,7 @@ function getTagGraphHtml() {
     .search-actions {
       display: flex;
       gap: 6px;
+      flex-shrink: 0;
     }
     .search-actions button {
       padding: 4px 12px;
@@ -536,6 +564,9 @@ function getTagGraphHtml() {
       display: flex;
       justify-content: space-between;
       font-size: 12px;
+    }
+    .suggestion.active {
+      background: rgba(127, 91, 255, 0.25);
     }
     .suggestion:hover {
       background: rgba(127, 91, 255, 0.2);
@@ -631,16 +662,17 @@ function getTagGraphHtml() {
       <canvas id="bubble-canvas"></canvas>
       <div class="empty-hint" id="empty-hint">暂无标签数据，请先构建索引。</div>
       <div class="search-bar">
-        <div class="search-row">
-          <input id="search-input" placeholder="搜索标签…" />
-          <div class="search-actions" id="filter-actions">
-            <button data-filter="all" class="active">全部</button>
-            <button data-filter="base">基础</button>
-            <button data-filter="semantic">语义</button>
-          </div>
+      <div class="search-row">
+        <input id="search-input" placeholder="搜索标签…" />
+        <div class="search-actions" id="filter-actions">
+          <button data-filter="all" class="active">全部</button>
+          <button data-filter="base">基础</button>
+          <button data-filter="semantic">语义</button>
         </div>
-        <div class="suggestions" id="suggestions"></div>
+        <button class="refresh-btn" id="refresh-btn">刷新</button>
       </div>
+      <div class="suggestions" id="suggestions"></div>
+    </div>
     </div>
     <div class="list-zone">
       <div class="list-header">
@@ -656,6 +688,7 @@ function getTagGraphHtml() {
     const canvas = document.getElementById('bubble-canvas');
     const ctx = canvas.getContext('2d');
     const emptyHint = document.getElementById('empty-hint');
+    const refreshBtn = document.getElementById('refresh-btn');
     const list = document.getElementById('list');
     const panelMeta = document.getElementById('panel-meta');
     const selectedTagsEl = document.getElementById('selected-tags');
@@ -667,6 +700,8 @@ function getTagGraphHtml() {
     let activeFilter = 'all';
     let layout = null;
     let hoverTag = null;
+    let suggestionIndex = -1;
+    let suggestionItems = [];
     let rafId = 0;
     let canvasWidth = 0;
     let canvasHeight = 0;
@@ -721,94 +756,142 @@ function getTagGraphHtml() {
       const counts = filtered.map((item) => item.count);
       const min = Math.min(...counts);
       const max = Math.max(...counts);
-      const minDiameter = 56;
-      const maxDiameter = 150;
+      const minDiameter = 70;
+      const maxDiameter = 190;
       const diameterFor = (item) => {
-        const scale = max === min ? 0.5 : (item.count - min) / (max - min);
-        return minDiameter + scale * (maxDiameter - minDiameter);
+        const raw = max === min ? 0.5 : (item.count - min) / (max - min);
+        const scaled = Math.pow(raw, 1.15);
+        return minDiameter + scaled * (maxDiameter - minDiameter);
       };
       const nodes = filtered.map((item) => ({
         ...item,
         radius: diameterFor(item) / 2,
         x: 0,
-        y: 0
+        y: 0,
+        angle: 0
       }));
       nodes.sort((a, b) => b.radius - a.radius);
-      const centerNode = nodes[0];
+      const maxRadius = nodes[0]?.radius || 60;
+      const gap = Math.max(4, maxRadius * 0.03);
+      const cellSize = (maxRadius + gap) * 2;
+      const grid = new Map();
       const placed = [];
       const map = new Map();
-      const rings = [];
-      const gap = Math.max(8, (centerNode ? centerNode.radius : 48) * 0.08);
-      const capacityFor = (radius, maxRadius) =>
-        Math.max(6, Math.floor((2 * Math.PI * radius) / (2 * maxRadius + gap)));
-      const ringFill = (ring, maxRadius) =>
-        (ring.items.length + 1) * (2 * maxRadius + gap) >
-        2 * Math.PI * ring.radius * 0.9;
-      if (centerNode) {
-        placed.push(centerNode);
-        map.set(centerNode.tag, centerNode);
-      }
-      for (let i = 1; i < nodes.length; i += 1) {
-        const node = nodes[i];
-        if (!rings.length) {
-          rings.push({
-            radius: (centerNode ? centerNode.radius : 0) + node.radius + gap,
-            maxRadius: node.radius,
-            items: [node]
-          });
-          continue;
-        }
-        const ring = rings[rings.length - 1];
-        const nextMax = Math.max(ring.maxRadius, node.radius);
-        const nextCap = capacityFor(ring.radius, nextMax);
-        if (node.radius > ring.maxRadius || ring.items.length + 1 > nextCap || ringFill(ring, nextMax)) {
-          const nextRadius = ring.radius + ring.maxRadius + node.radius + gap;
-          rings.push({
-            radius: nextRadius,
-            maxRadius: node.radius,
-            items: [node]
-          });
-        } else {
-          ring.items.push(node);
-          ring.maxRadius = nextMax;
-        }
-      }
-      rings.forEach((ring, ringIndex) => {
-        const count = ring.items.length;
-        const step = (Math.PI * 2) / Math.max(count, 1);
-        const offset = ringIndex * 0.35;
-        ring.items.forEach((node, i) => {
-          const angle = i * step + offset;
-          node.x = Math.cos(angle) * ring.radius;
-          node.y = Math.sin(angle) * ring.radius;
-          placed.push(node);
-          map.set(node.tag, node);
-        });
-      });
-      let minX = Infinity;
-      let minY = Infinity;
-      let maxX = -Infinity;
-      let maxY = -Infinity;
-      let maxNodeRadius = 0;
-      placed.forEach((node) => {
-        minX = Math.min(minX, node.x - node.radius);
-        maxX = Math.max(maxX, node.x + node.radius);
-        minY = Math.min(minY, node.y - node.radius);
-        maxY = Math.max(maxY, node.y + node.radius);
-        maxNodeRadius = Math.max(maxNodeRadius, node.radius);
-      });
-      const cellSize = (maxNodeRadius + gap) * 2;
-      const grid = new Map();
       const cellKey = (x, y) =>
         String(Math.floor(x / cellSize)) + "," + String(Math.floor(y / cellSize));
-      placed.forEach((node, index) => {
+      const addToGrid = (index) => {
+        const node = placed[index];
         const key = cellKey(node.x, node.y);
+        node._cellKey = key;
         let list = grid.get(key);
         if (!list) {
           list = [];
           grid.set(key, list);
         }
         list.push(index);
+      };
+      const removeFromGrid = (index) => {
+        const node = placed[index];
+        const key = node._cellKey;
+        if (!key) return;
+        const list = grid.get(key);
+        if (!list) return;
+        const pos = list.indexOf(index);
+        if (pos >= 0) list.splice(pos, 1);
+        if (!list.length) grid.delete(key);
+      };
+      const updateGrid = (index) => {
+        removeFromGrid(index);
+        addToGrid(index);
+      };
+      const collides = (x, y, r, ignoreIndex) => {
+        const cx = Math.floor(x / cellSize);
+        const cy = Math.floor(y / cellSize);
+        for (let dx = -1; dx <= 1; dx += 1) {
+          for (let dy = -1; dy <= 1; dy += 1) {
+            const list = grid.get(String(cx + dx) + "," + String(cy + dy));
+            if (!list) continue;
+            for (const idx of list) {
+              if (idx === ignoreIndex) continue;
+              const other = placed[idx];
+              const dist = Math.hypot(x - other.x, y - other.y);
+              if (dist < r + other.radius + gap) {
+                return true;
+              }
+            }
+          }
+        }
+        return false;
+      };
+
+      const phi = 2.399963229728653;
+      const baseStep = (maxRadius + gap) * 0.85;
+
+      nodes.forEach((node, index) => {
+        node.angle = index * phi;
+        if (index === 0) {
+          node.x = 0;
+          node.y = 0;
+          placed.push(node);
+          map.set(node.tag, node);
+          addToGrid(placed.length - 1);
+          return;
+        }
+        let radius = baseStep * Math.sqrt(index);
+        let placedOk = false;
+        for (let attempt = 0; attempt < 2400; attempt += 1) {
+          const x = Math.cos(node.angle) * radius;
+          const y = Math.sin(node.angle) * radius;
+          if (!collides(x, y, node.radius)) {
+            node.x = x;
+            node.y = y;
+            placedOk = true;
+            break;
+          }
+          radius += Math.max(4, node.radius * 0.18);
+        }
+        if (!placedOk) {
+          node.x = Math.cos(node.angle) * radius;
+          node.y = Math.sin(node.angle) * radius;
+        }
+        placed.push(node);
+        map.set(node.tag, node);
+        addToGrid(placed.length - 1);
+      });
+
+      const compressPasses = 6;
+      for (let pass = 0; pass < compressPasses; pass += 1) {
+        for (let i = 1; i < placed.length; i += 1) {
+          const node = placed[i];
+          let radius = Math.hypot(node.x, node.y);
+          const step = Math.max(3, node.radius * 0.15);
+          for (let attempt = 0; attempt < 6; attempt += 1) {
+            const nextRadius = radius - step;
+            if (nextRadius <= node.radius * 0.5) {
+              break;
+            }
+            const nx = Math.cos(node.angle) * nextRadius;
+            const ny = Math.sin(node.angle) * nextRadius;
+            if (collides(nx, ny, node.radius, i)) {
+              break;
+            }
+            node.x = nx;
+            node.y = ny;
+            radius = nextRadius;
+            updateGrid(i);
+          }
+        }
+      }
+
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      placed.forEach((node) => {
+        minX = Math.min(minX, node.x - node.radius);
+        maxX = Math.max(maxX, node.x + node.radius);
+        minY = Math.min(minY, node.y - node.radius);
+        maxY = Math.max(maxY, node.y + node.radius);
       });
       layout = {
         nodes: placed,
@@ -861,18 +944,27 @@ function getTagGraphHtml() {
     function drawBubble(node) {
       const active = selectedTags.includes(node.tag);
       const hovered = hoverTag === node.tag;
+      const isSemantic = node.tagType === 'semantic';
+      const baseFill = 'rgba(102, 72, 200, 0.35)';
+      const semanticFill = 'rgba(255, 208, 120, 0.26)';
       ctx.beginPath();
       ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
       if (active) {
-        ctx.fillStyle = 'rgba(127, 91, 255, 0.45)';
+        ctx.fillStyle = isSemantic ? 'rgba(255, 211, 107, 0.4)' : 'rgba(127, 91, 255, 0.45)';
       } else if (hovered) {
-        ctx.fillStyle = 'rgba(127, 91, 255, 0.3)';
+        ctx.fillStyle = isSemantic ? 'rgba(255, 211, 107, 0.32)' : 'rgba(127, 91, 255, 0.3)';
       } else {
-        ctx.fillStyle = 'rgba(102, 72, 200, 0.35)';
+        ctx.fillStyle = isSemantic ? semanticFill : baseFill;
       }
       ctx.fill();
       ctx.lineWidth = active || hovered ? 2 : 1.2;
-      ctx.strokeStyle = active ? '#ffd36b' : hovered ? 'rgba(255, 211, 107, 0.7)' : 'rgba(155, 120, 255, 0.7)';
+      if (active) {
+        ctx.strokeStyle = isSemantic ? '#ffd36b' : '#b39bff';
+      } else if (hovered) {
+        ctx.strokeStyle = isSemantic ? 'rgba(255, 211, 107, 0.8)' : 'rgba(155, 120, 255, 0.9)';
+      } else {
+        ctx.strokeStyle = isSemantic ? 'rgba(255, 211, 107, 0.6)' : 'rgba(155, 120, 255, 0.7)';
+      }
       ctx.stroke();
 
       const label = node.tag.length > 14 ? node.tag.slice(0, 12) + '…' : node.tag;
@@ -1016,6 +1108,8 @@ function getTagGraphHtml() {
     function updateSuggestions(value) {
       const query = value.trim().toLowerCase();
       suggestions.innerHTML = '';
+      suggestionIndex = -1;
+      suggestionItems = [];
       if (!query) {
         suggestions.classList.remove('active');
         return;
@@ -1036,8 +1130,20 @@ function getTagGraphHtml() {
           suggestions.classList.remove('active');
         });
         suggestions.appendChild(el);
+        suggestionItems.push({ node, el });
       });
       suggestions.classList.add('active');
+    }
+
+    function highlightSuggestion(index) {
+      suggestionItems.forEach((item, i) => {
+        if (i === index) {
+          item.el.classList.add('active');
+          item.el.scrollIntoView({ block: 'nearest' });
+        } else {
+          item.el.classList.remove('active');
+        }
+      });
     }
 
     window.addEventListener('message', (event) => {
@@ -1058,11 +1164,30 @@ function getTagGraphHtml() {
     });
 
     searchInput.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowDown') {
+        if (!suggestionItems.length) return;
+        event.preventDefault();
+        suggestionIndex = Math.min(suggestionIndex + 1, suggestionItems.length - 1);
+        highlightSuggestion(suggestionIndex);
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        if (!suggestionItems.length) return;
+        event.preventDefault();
+        suggestionIndex = Math.max(suggestionIndex - 1, 0);
+        highlightSuggestion(suggestionIndex);
+        return;
+      }
       if (event.key === 'Enter' && searchInput.value.trim()) {
-        const value = searchInput.value.trim().toLowerCase();
-        const node = getFilteredTags().find((item) => item.tag === value);
-        if (node) {
-          addTag(node.tag);
+        if (suggestionIndex >= 0 && suggestionItems[suggestionIndex]) {
+          const pick = suggestionItems[suggestionIndex].node;
+          addTag(pick.tag);
+        } else {
+          const value = searchInput.value.trim().toLowerCase();
+          const node = getFilteredTags().find((item) => item.tag === value);
+          if (node) {
+            addTag(node.tag);
+          }
         }
         searchInput.value = '';
         suggestions.classList.remove('active');
@@ -1077,6 +1202,10 @@ function getTagGraphHtml() {
         buildLayout();
         updateSuggestions(searchInput.value || '');
       });
+    });
+
+    refreshBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'refreshIndex' });
     });
 
     canvas.addEventListener('pointerdown', (event) => {
@@ -1113,7 +1242,9 @@ function getTagGraphHtml() {
         const values = Array.from(pointers.values());
         const nextDistance = Math.hypot(values[0].x - values[1].x, values[0].y - values[1].y);
         if (pinchStart.distance > 0) {
-          const nextScale = Math.min(2.6, Math.max(0.45, pinchStart.scale * (nextDistance / pinchStart.distance)));
+          const ratio = nextDistance / pinchStart.distance;
+          const boosted = Math.pow(ratio, 1.35);
+          const nextScale = Math.min(6.0, Math.max(0.08, pinchStart.scale * boosted));
           const centerX = (values[0].x + values[1].x) / 2;
           const centerY = (values[0].y + values[1].y) / 2;
           zoomAt(centerX, centerY, nextScale);
@@ -1123,8 +1254,9 @@ function getTagGraphHtml() {
       if (isPanning && dragStart) {
         const dx = event.clientX - dragStart.x;
         const dy = event.clientY - dragStart.y;
-        view.offsetX = dragStart.offsetX + dx;
-        view.offsetY = dragStart.offsetY + dy;
+        const panBoost = 1.35;
+        view.offsetX = dragStart.offsetX + dx * panBoost;
+        view.offsetY = dragStart.offsetY + dy * panBoost;
         dragged = true;
         requestRender();
         return;
@@ -1169,8 +1301,8 @@ function getTagGraphHtml() {
         return;
       }
       event.preventDefault();
-      const delta = Math.max(-0.45, Math.min(0.45, -event.deltaY * 0.004));
-      const nextScale = Math.min(2.6, Math.max(0.45, view.scale * (1 + delta)));
+      const delta = Math.max(-1.2, Math.min(1.2, -event.deltaY * 0.02));
+      const nextScale = Math.min(6.0, Math.max(0.08, view.scale * (1 + delta)));
       zoomAt(event.clientX, event.clientY, nextScale);
     }, { passive: false });
 
@@ -1192,8 +1324,17 @@ class TagGraphViewProvider {
             if (message.type === "refresh") {
                 await this.postData();
             }
+            if (message.type === "refreshIndex") {
+                await vscode.commands.executeCommand("semanticRoute.updateIndex");
+                await this.postData();
+            }
             if (message.type === "open") {
                 await this.openLocation(message.filePath, message.line);
+            }
+        });
+        view.onDidChangeVisibility(() => {
+            if (view.visible) {
+                this.postData();
             }
         });
         await this.postData();
@@ -1494,6 +1635,12 @@ function activate(context) {
         }
         const outDir = path_1.default.join(projectRoot, ".ai_context");
         const modulesDir = path_1.default.join(outDir, "modules");
+        const hasIndex = await hasModuleIndex(outDir);
+        if (!hasIndex) {
+            vscode.window.showInformationMessage("Semantic Route: 索引为空，改为执行构建。");
+            await vscode.commands.executeCommand("semanticRoute.buildIndex");
+            return;
+        }
         const beforeSnapshot = await snapshotModuleFiles(modulesDir);
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,

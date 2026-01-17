@@ -34,13 +34,13 @@ function splitCamelAndSnake(value) {
         .map((token) => token.trim())
         .filter(Boolean);
 }
-function pushTokens(set, tokens, minLen) {
+function pushTokens(set, tokens, minLen, options) {
     for (const token of tokens) {
         const normalized = token.toLowerCase();
         if (normalized.length < minLen) {
             continue;
         }
-        if (STOP_WORDS.has(normalized)) {
+        if (!options?.allowStopWords && STOP_WORDS.has(normalized)) {
             continue;
         }
         set.add(normalized);
@@ -73,15 +73,17 @@ function collectLowInfoTags(filePath, symbolId, baseTags) {
     }
     return lowInfo;
 }
+/**
+ * @deprecated Use adapter.inferBaseTags() instead for language-specific tag inference.
+ * This function is kept for backward compatibility but delegates to a basic implementation.
+ */
 function inferBaseTagsForSymbol(params) {
-    const { moduleId, pathModuleHint, filePath, symbolId } = params;
+    const { pathModuleHint, filePath, symbolId } = params;
     const tags = new Set();
+    // Basic path-based tags only
     if (pathModuleHint) {
         const parts = pathModuleHint.split(/[\\/]+/);
         pushTokens(tags, parts, 2);
-    }
-    if (moduleId) {
-        pushTokens(tags, splitCamelAndSnake(moduleId), 2);
     }
     const dir = path_1.default.dirname(filePath);
     if (dir && dir !== ".") {
@@ -90,12 +92,12 @@ function inferBaseTagsForSymbol(params) {
     }
     const base = path_1.default.basename(filePath, path_1.default.extname(filePath));
     pushTokens(tags, splitCamelAndSnake(base), 2);
-    const symbolParts = symbolId.split("::");
+    // Basic symbol ID splitting (language-agnostic: split by common delimiters)
+    const symbolParts = symbolId.split(/[:.]+/);
     for (const part of symbolParts) {
         pushTokens(tags, splitCamelAndSnake(part), 3);
     }
-    const limited = Array.from(tags);
-    return limited.slice(0, 8);
+    return Array.from(tags);
 }
 function filterSemanticTags(params) {
     const { semanticTags, baseTags, filePath, symbolId } = params;

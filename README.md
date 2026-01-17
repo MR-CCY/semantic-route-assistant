@@ -1,133 +1,265 @@
-Semantic Routing Code Assistant (SRCA)
-=====================================
+# Semantic Routing Code Assistant (SRCA)
 
-中文说明
---------
-
-概览
-- SRCA 用于为 C/C++ 代码构建轻量语义索引，让 LLM 提示词更短、更准。
-- 会扫描源码、抽取符号、生成 brief（可接 LLM）、按标签聚合模块，输出模块级 Markdown 与 routing.json。
-
-目录结构
-- core/                Node/TypeScript 引擎
-- vscode-extension/    VS Code 插件
-- examples/            示例 C++ 项目
-- docs/                设计文档
-- scripts/             开发脚本
-
-当前能力（V3）
-- 全内存构建管线：
-  - scanSourceFiles -> extractSymbolsFromCode (tree-sitter-cpp)
-  - extractImplementationForSymbol
- - generateBriefForSymbol（LLM 或占位）
-  - 规则标签 + 语义标签聚合
-  - 输出模块级 Markdown + routing.json
-  - .meta.json（文件 hash 缓存）
-- Search Skill Blocks 支持标签过滤（#tag）；标签图谱使用 Canvas 2D，支持拖拽/缩放、标签筛选与跳转。
-- 语言适配层已抽象，C/C++ 为默认适配器。
-
-索引产物
-- .ai_context/modules/*.md
-  - 模块视图，条目注释含 tags。
-- .ai_context/routing.json
-  - symbol -> { module, declHash, filePath, tags }（不含 brief）。
-- .ai_context/.meta.json
-  - 文件 hash + lastUpdated。
-
-VS Code 指令
-- Semantic Route: Configure LLM
-- Semantic Route: Build Index
-- Semantic Route: Update Index
-- Semantic Route: Search Skill Blocks
-- Semantic Route: Tag Graph（标签气泡图，支持筛选/搜索/跳转）
-
-LLM 配置
-- 通过 "Semantic Route: Configure LLM" 添加/编辑配置并选择使用。
-- 每个配置包含 provider/model/baseUrl/systemPrompt/userPrompt 和 API Key。
-- Prompt 占位符：{{moduleName}} / {{signature}} / {{implementation}}。
-
-Settings（Semantic Route）
-- semanticRoute.llm.profiles
-- semanticRoute.llm.activeProfile
-- semanticRoute.llm.enabled
-- semanticRoute.llm.briefConcurrency
-
-扩展新语言
-1) 在 core/src/language/ 新增 adapter（如 pythonAdapter.ts）。
-2) 在 core/src/language/index.ts 注册。
-3) 调用 buildModuleIndexV3/updateModuleIndexV3 时传 { languageId: "yourAdapterId" }。
-
-开发
-- scripts/rebuild.sh
-  - 重新构建 core 与 VS Code 插件。
-
-备注
-- Build/Update 默认使用 V3，输出到 .ai_context。
-- V1/V2 逻辑仍保留在 core 内部，但不再暴露为命令。
+一个为多语言代码构建轻量语义索引的 VS Code 扩展，让 LLM 提示词更短、更准。
 
 ---
 
-English
--------
+## ✨ 核心特性
 
-Overview
-- SRCA builds a lightweight semantic index for C/C++ code so LLM prompts stay short and accurate.
-- It scans source files, extracts symbols, generates one-line briefs (LLM optional), clusters symbols into modules, and writes module Markdown plus routing.json.
+- **多语言支持**：自动识别并索引 C/C++、Java、JavaScript/TypeScript、Vue、Python、Go 代码
+- **智能标签**：基于规则的基础标签 + LLM 生成的语义标签
+- **标签图谱**：可视化的 Canvas 2D 气泡图，支持拖拽/缩放、筛选与跳转
+- **增量更新**：通过文件 hash 缓存，仅更新修改的文件
+- **可扩展架构**：语言适配器层设计，轻松添加新语言支持
 
-Repository layout
-- core/                Node/TypeScript engine
-- vscode-extension/    VS Code extension
-- examples/            Example C++ projects
-- docs/                Design docs
-- scripts/             Dev scripts
+---
 
-Current features (V3)
-- V3 in-memory pipeline:
-  - scanSourceFiles -> extractSymbolsFromCode (tree-sitter-cpp)
-  - extractImplementationForSymbol
-  - generateBriefForSymbol (LLM or placeholder)
-  - rule-based tags + semantic tag clustering
-  - module Markdown output
-  - routing.json output
-  - .meta.json (file hash cache)
-- Search Skill Blocks with tag filters (#tag); Tag Graph uses Canvas 2D with drag/zoom/filter and jump-to-location.
-- Language adapter layer (C/C++ is the default adapter).
+## 📂 目录结构
 
-Index outputs
-- .ai_context/modules/*.md
-  - Module view with tags in HTML comments.
-- .ai_context/routing.json
-  - Symbol -> { module, declHash, filePath, tags } (no brief text).
-- .ai_context/.meta.json
-  - File hash + lastUpdated.
+```
+semantic-route-assistant/
+├── core/                    # Node/TypeScript 核心引擎
+│   └── src/
+│       ├── language/        # 语言适配器
+│       │   ├── cppAdapter.ts
+│       │   ├── javaAdapter.ts
+│       │   ├── jsAdapter.ts
+│       │   ├── pythonAdapter.ts
+│       │   └── goAdapter.ts
+│       ├── indexV3.ts       # V3 索引构建主逻辑
+│       └── ...
+├── vscode-extension/        # VS Code 扩展
+├── examples/                # 示例项目
+├── docs/                    # 设计文档
+└── scripts/                 # 开发脚本
+```
 
-VS Code commands
-- Semantic Route: Configure LLM
-- Semantic Route: Build Index
-- Semantic Route: Update Index
-- Semantic Route: Search Skill Blocks
-- Semantic Route: Tag Graph (bubble view with filter/search/jump)
+---
 
-LLM configuration
-- Use "Semantic Route: Configure LLM" to add/edit profiles and select one.
-- Each profile includes provider/model/baseUrl/systemPrompt/userPrompt and an API key.
-- Prompt placeholders: {{moduleName}}, {{signature}}, {{implementation}}.
+## 🌐 支持的语言
 
-Settings (Semantic Route)
-- semanticRoute.llm.profiles
-- semanticRoute.llm.activeProfile
-- semanticRoute.llm.enabled
-- semanticRoute.llm.briefConcurrency
+| 语言 | 文件扩展名 | 符号提取 | 标签推断 |
+|------|-----------|---------|---------|
+| **C/C++** | `.c`, `.cpp`, `.cc`, `.cxx`, `.h`, `.hpp`, `.hxx`, `.hh` | tree-sitter | class/struct, 继承, 命名空间 |
+| **Java** | `.java` | 正则 | class/interface/enum, extends/implements, 注解 |
+| **JavaScript/TypeScript** | `.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.cjs` | 正则 | class/function, async/export, 装饰器 |
+| **Vue** | `.vue` | 正则 | component, 装饰器 |
+| **Python** | `.py`, `.pyw` | 正则 | class/def, async, 装饰器, 继承 |
+| **Go** | `.go` | 正则 | func/struct/interface, receiver, exported |
 
-Language support
-1) Create a new adapter in core/src/language/ (e.g., pythonAdapter.ts).
-2) Register it in core/src/language/index.ts.
-3) Call buildModuleIndexV3/updateModuleIndexV3 with { languageId: "yourAdapterId" }.
+---
 
-Development
-- scripts/rebuild.sh
-  - Rebuilds core and the VS Code extension.
+## 🚀 VS Code 指令
 
-Notes
-- Build/Update use V3 and write to .ai_context.
-- V1/V2 remain in core for compatibility but are not exposed as commands.
+| 指令 | 说明 |
+|------|------|
+| `Semantic Route: Build Index` | 全量构建索引 |
+| `Semantic Route: Update Index` | 增量更新索引 |
+| `Semantic Route: Search Skill Blocks` | 搜索技能块（支持 `#tag` 过滤） |
+| `Semantic Route: Tag Graph` | 打开标签气泡图 |
+| `Semantic Route: Configure LLM` | 配置 LLM 提供商 |
+| `Semantic Route: Auto Skills (Doc/Clipboard)` | 自动生成技能文档 |
+
+---
+
+## 📦 索引产物
+
+索引输出到项目根目录的 `.ai_context/` 文件夹：
+
+```
+.ai_context/
+├── modules/           # 模块级 Markdown 文件
+│   ├── Item.md
+│   ├── Service.md
+│   └── ...
+├── routing.json       # 符号路由表
+└── .meta.json         # 文件 hash 缓存
+```
+
+### 模块文件格式示例
+
+```markdown
+# Module: Item
+
+> 图形项相关的类和方法
+
+## APIs
+
+- `class LineItem : public BaseItem` <!-- id: Item::LineItem | hash: xxx | file: client/src/Item/line_item.h | tags_base: [item, line, class, baseitem] | tags_sem: [图形, 连接线] -->
+  线条图形项，连接两个矩形
+
+- `void RectItem::addLine(LineItem* line)` <!-- id: Item::RectItem::addLine | hash: xxx | file: client/src/Item/rect_item.cpp | tags_base: [item, rect, add, line, rectitem] | tags_sem: [集合存储, 对象关联] -->
+  向矩形项添加线条
+```
+
+---
+
+## 🔧 标签系统
+
+### 基础标签 (tags_base)
+通过规则自动推断，不经过 LLM：
+
+- **路径分词**：`client/src/Item/rect_item.cpp` → `item`, `rect`
+- **符号 ID 分词**：`RectItem::addLine` → `rect`, `add`, `line`
+- **类型标签**：`class`、`struct`、`interface`、`function`
+- **继承关系**：父类名作为标签
+- **语言特定**：
+  - Java: 注解名、extends/implements
+  - Python: 装饰器名
+  - Go: exported, method, receiver 类型
+
+### 语义标签 (tags_sem)
+通过 LLM 生成，描述功能语义：
+
+- 自动过滤与基础标签重复的内容
+- 最多保留 5 个高信息量标签
+- 示例：`[集合存储, 无重复插入, 对象关联]`
+
+---
+
+## ⚙️ LLM 配置
+
+通过 `Semantic Route: Configure LLM` 命令配置：
+
+| 提供商 | 支持的模型 |
+|--------|-----------|
+| OpenAI | gpt-4o-mini, gpt-4.1-mini, gpt-4o |
+| Qwen | qwen-flash, qwen-turbo, qwen-plus, qwen-max |
+| Gemini | gemini-1.5-flash, gemini-1.5-pro |
+| Other | 自定义 baseUrl 和模型 |
+
+### Prompt 占位符
+
+| 占位符 | 说明 |
+|--------|------|
+| `{{moduleName}}` | 模块名 |
+| `{{signature}}` | 函数/类签名 |
+| `{{implementation}}` | 函数实现代码 |
+
+### 相关设置
+
+```json
+{
+  "semanticRoute.llm.profiles": [],
+  "semanticRoute.llm.activeProfile": "",
+  "semanticRoute.llm.enabled": true,
+  "semanticRoute.llm.briefConcurrency": 4,
+  "semanticRoute.skills.autoTopN": 8
+}
+```
+
+---
+
+## 🛠️ 扩展新语言
+
+1. 在 `core/src/language/` 创建标签推断文件和适配器：
+
+```typescript
+// newLangTags.ts
+export function inferNewLangBaseTags(input: BaseTagsInput): string[] {
+  // 语言特定的标签推断逻辑
+}
+
+// newLangAdapter.ts
+export const newLangAdapter: LanguageAdapter = {
+  id: "newlang",
+  displayName: "New Language",
+  fileExtensions: ["nl", "newlang"],
+  scanSourceFiles: createScanner(["**/*.nl"]),
+  extractSymbolsFromCode,
+  extractImplementationFromCode,
+  extractImplementationForSymbol,
+  inferPathModuleHint: inferPathModuleHintGeneric,
+  inferBaseTags: inferNewLangBaseTags
+};
+```
+
+2. 在 `core/src/language/index.ts` 注册：
+
+```typescript
+import { newLangAdapter } from "./newLangAdapter";
+registerLanguageAdapter(newLangAdapter);
+```
+
+3. 重新编译：
+
+```bash
+cd core && npm run build
+```
+
+---
+
+## 🔨 开发
+
+### 构建
+
+```bash
+# 构建 core
+cd core && npm run build
+
+# 构建 VS Code 扩展
+cd vscode-extension && npm run compile
+
+# 一键重建
+./scripts/rebuild.sh
+```
+
+### 打包扩展
+
+```bash
+cd vscode-extension
+npx vsce package
+```
+
+---
+
+## 📋 架构图
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        VS Code Extension                         │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │   Commands: Build/Update/Search/TagGraph/ConfigureLLM    │   │
+│  └──────────────────────────────────────────────────────────┘   │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      Core Engine (indexV3)                       │
+│  ┌────────────────┐  ┌────────────────┐  ┌─────────────────┐   │
+│  │ scanAllFiles   │→ │ extractSymbols │→ │ inferBaseTags   │   │
+│  └────────────────┘  └────────────────┘  └─────────────────┘   │
+│           │                  │                    │              │
+│           ▼                  ▼                    ▼              │
+│  ┌────────────────────────────────────────────────────────┐     │
+│  │              Language Adapter Layer                     │     │
+│  │  ┌─────┐ ┌──────┐ ┌────┐ ┌────────┐ ┌────┐            │     │
+│  │  │ C++ │ │ Java │ │ JS │ │ Python │ │ Go │            │     │
+│  │  └─────┘ └──────┘ └────┘ └────────┘ └────┘            │     │
+│  └────────────────────────────────────────────────────────┘     │
+│           │                                                      │
+│           ▼                                                      │
+│  ┌─────────────────┐  ┌─────────────────┐                       │
+│  │ LLM Brief/Tags  │→ │ Module Grouping │                       │
+│  └─────────────────┘  └─────────────────┘                       │
+│           │                    │                                 │
+│           ▼                    ▼                                 │
+│  ┌────────────────────────────────────────────────────────┐     │
+│  │   Output: .ai_context/modules/*.md + routing.json       │     │
+│  └────────────────────────────────────────────────────────┘     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📝 备注
+
+- Build/Update 默认使用 V3 管线，输出到 `.ai_context/`
+- V1/V2 逻辑保留在 core 内部，但不再暴露为命令
+- C/C++ 使用 tree-sitter 进行精确解析，其他语言使用正则提取（后续可升级）
+
+---
+
+## License
+
+MIT

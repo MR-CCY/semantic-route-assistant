@@ -319,7 +319,24 @@ export function extractSymbolsFromCode(code: string, filePath: string): Extracte
         return;
       }
 
-      const signature = `${node.type === "class_specifier" ? "class" : "struct"} ${className}`;
+      // Skip forward declarations (no body)
+      const body =
+        node.childForFieldName("body") || findNamedChild(node, ["field_declaration_list"]);
+      if (!body) {
+        return;
+      }
+
+      // Build signature with inheritance info
+      const keyword = node.type === "class_specifier" ? "class" : "struct";
+      let signature = `${keyword} ${className}`;
+
+      // Find base_class_clause to include inheritance info
+      const baseClause = findNamedChild(node, ["base_class_clause"]);
+      if (baseClause) {
+        const baseText = getText(code, baseClause).trim();
+        signature = `${signature} ${baseText}`;
+      }
+
       symbols.push({
         id: className,
         kind: "class",
@@ -329,11 +346,7 @@ export function extractSymbolsFromCode(code: string, filePath: string): Extracte
         declLine: node.startPosition.row + 1
       });
 
-      const body =
-        node.childForFieldName("body") || findNamedChild(node, ["field_declaration_list"]);
-      if (!body) {
-        return;
-      }
+      // body is already checked above, no need to check again
 
       for (const child of body.namedChildren) {
         if (child.type !== "field_declaration") {

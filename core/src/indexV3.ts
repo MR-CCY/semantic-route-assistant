@@ -2,14 +2,15 @@ import path from "path";
 import { mkdir, readFile, unlink, writeFile } from "fs/promises";
 import { createHash } from "crypto";
 import fg from "fast-glob";
+import ignore from "ignore";
 import { generateBriefAndTagsForSymbol } from "./llm/generateBriefForSymbol";
 import { buildRoutingFromModules, saveRouting } from "./routingStore";
 import { loadMeta, saveMeta, Meta } from "./metaStore";
 import { hashSignature, normalizeSignature } from "./signatureUtils";
 import { Cluster, SymbolRecord } from "./v3Types";
 import { groupSymbolsToModulesWithLLM } from "./moduleGrouper";
-import { filterSemanticTags, inferBaseTagsForSymbol } from "./tagUtils";
-import { getLanguageAdapter, LanguageAdapter } from "./language";
+import { filterSemanticTags } from "./tagUtils";
+import { getLanguageAdapter, getAdapterForFile, getSupportedExtensions, LanguageAdapter } from "./language";
 
 function hashContent(content: string): string {
   return createHash("sha1").update(content).digest("hex");
@@ -53,6 +54,47 @@ function buildMeta(fileHashes: Record<string, string>): Meta {
   return meta;
 }
 
+/**
+ * Load .gitignore patterns from project root.
+ */
+async function loadIgnorePatterns(projectRoot: string): Promise<ReturnType<typeof ignore>> {
+  const ig = ignore();
+  const gitignorePath = path.join(projectRoot, ".gitignore");
+  try {
+    const content = await readFile(gitignorePath, "utf8");
+    ig.add(content);
+  } catch (error: any) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  }
+  return ig;
+}
+
+/**
+ * Scan source files for all supported languages.
+ */
+async function scanAllLanguageFiles(projectRoot: string): Promise<string[]> {
+  const extensions = getSupportedExtensions();
+  const patterns = extensions.map((ext) => `**/*.${ext}`);
+  const ig = await loadIgnorePatterns(projectRoot);
+
+  const matches = await fg(patterns, {
+    cwd: projectRoot,
+    onlyFiles: true,
+    dot: false,
+    absolute: true
+  });
+
+  const filtered = matches.filter((filePath) => {
+    const relative = path.relative(projectRoot, filePath);
+    return !ig.ignores(relative);
+  });
+
+  return filtered;
+}
+
+
 const ENTRY_REGEX =
   /^\s*-\s+`([^`]+)`\s*<!--\s*id:\s*([^|]+)\s*\|\s*hash:\s*([^\s|]+)(?:\s*\|\s*impl:\s*([^\s|]+))?(?:\s*\|\s*file:\s*([^|]+))?(?:\s*\|\s*tags_base:\s*\[([^\]]*)\])?(?:\s*\|\s*tags_sem:\s*\[([^\]]*)\])?(?:\s*\|\s*tags:\s*\[([^\]]*)\])?\s*-->/;
 
@@ -86,21 +128,21 @@ function parseModuleEntries(content: string): Map<string, ExistingEntry> {
     const legacyTagsRaw = match[8];
     const baseTags = baseTagsRaw
       ? baseTagsRaw
-          .split(",")
-          .map((tag) => tag.trim().toLowerCase())
-          .filter(Boolean)
+        .split(",")
+        .map((tag) => tag.trim().toLowerCase())
+        .filter(Boolean)
       : [];
     const semanticTags = semanticTagsRaw
       ? semanticTagsRaw
-          .split(",")
-          .map((tag) => tag.trim().toLowerCase())
-          .filter(Boolean)
+        .split(",")
+        .map((tag) => tag.trim().toLowerCase())
+        .filter(Boolean)
       : [];
     const legacyTags = legacyTagsRaw
       ? legacyTagsRaw
-          .split(",")
-          .map((tag) => tag.trim().toLowerCase())
-          .filter(Boolean)
+        .split(",")
+        .map((tag) => tag.trim().toLowerCase())
+        .filter(Boolean)
       : [];
 
     let brief = "";
@@ -229,7 +271,7 @@ async function collectSymbolsForV3(
   projectRoot: string,
   outDir: string,
   reuseExisting: boolean,
-  adapter: LanguageAdapter,
+  defaultAdapter: LanguageAdapter,
   options?: {
     onProgress?: (info: { current: number; total: number; filePath?: string }) => void;
   }
@@ -247,7 +289,8 @@ async function collectSymbolsForV3(
     baseTags: string[];
   }>;
 }> {
-  const files = await adapter.scanSourceFiles(projectRoot);
+  // Scan all supported language files
+  const files = await scanAllLanguageFiles(projectRoot);
   const fileHashes: Record<string, string> = {};
   const symbols: SymbolRecord[] = [];
   const briefTasks: Array<{
@@ -286,6 +329,10 @@ async function collectSymbolsForV3(
   for (const absolutePath of files) {
     currentFile += 1;
     const relativePath = path.relative(projectRoot, absolutePath);
+
+    // Get adapter for this specific file type
+    const adapter = getAdapterForFile(absolutePath) || defaultAdapter;
+
     const code = await readFile(absolutePath, "utf8");
     fileHashes[relativePath] = hashContent(code);
     options?.onProgress?.({ current: currentFile, total: totalFiles, filePath: relativePath });
@@ -304,11 +351,12 @@ async function collectSymbolsForV3(
         parts.length > 2 ? parts.slice(-2).join("::") : parts.join("::");
       const symbolKey = `${pathModuleHint}::${canonicalId}`;
       const symbolId = `${pathModuleHint}::${rawId}`;
-      const baseTags = inferBaseTagsForSymbol({
+      const baseTags = adapter.inferBaseTags({
         pathModuleHint,
         filePath: relativePath,
         symbolId,
-        brief: ""
+        signature: normalizedSignature,
+        kind: symbol.kind
       });
       const implSnippet = adapter.extractImplementationFromCode(code, normalizedSignature) || "";
       const implHash = hashContent(`${normalizedSignature}\n${implSnippet}`);

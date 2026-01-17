@@ -30,13 +30,18 @@ function splitCamelAndSnake(value: string): string[] {
     .filter(Boolean);
 }
 
-function pushTokens(set: Set<string>, tokens: string[], minLen: number): void {
+function pushTokens(
+  set: Set<string>,
+  tokens: string[],
+  minLen: number,
+  options?: { allowStopWords?: boolean }
+): void {
   for (const token of tokens) {
     const normalized = token.toLowerCase();
     if (normalized.length < minLen) {
       continue;
     }
-    if (STOP_WORDS.has(normalized)) {
+    if (!options?.allowStopWords && STOP_WORDS.has(normalized)) {
       continue;
     }
     set.add(normalized);
@@ -74,23 +79,26 @@ function collectLowInfoTags(filePath: string, symbolId: string, baseTags: string
   return lowInfo;
 }
 
+/**
+ * @deprecated Use adapter.inferBaseTags() instead for language-specific tag inference.
+ * This function is kept for backward compatibility but delegates to a basic implementation.
+ */
 export function inferBaseTagsForSymbol(params: {
   moduleId?: string;
   pathModuleHint?: string;
   filePath: string;
   symbolId: string;
+  signature?: string;
   brief?: string;
+  kind?: "function" | "class";
 }): string[] {
-  const { moduleId, pathModuleHint, filePath, symbolId } = params;
+  const { pathModuleHint, filePath, symbolId } = params;
   const tags = new Set<string>();
 
+  // Basic path-based tags only
   if (pathModuleHint) {
     const parts = pathModuleHint.split(/[\\/]+/);
     pushTokens(tags, parts, 2);
-  }
-
-  if (moduleId) {
-    pushTokens(tags, splitCamelAndSnake(moduleId), 2);
   }
 
   const dir = path.dirname(filePath);
@@ -102,14 +110,15 @@ export function inferBaseTagsForSymbol(params: {
   const base = path.basename(filePath, path.extname(filePath));
   pushTokens(tags, splitCamelAndSnake(base), 2);
 
-  const symbolParts = symbolId.split("::");
+  // Basic symbol ID splitting (language-agnostic: split by common delimiters)
+  const symbolParts = symbolId.split(/[:.]+/);
   for (const part of symbolParts) {
     pushTokens(tags, splitCamelAndSnake(part), 3);
   }
 
-  const limited = Array.from(tags);
-  return limited.slice(0, 8);
+  return Array.from(tags);
 }
+
 
 export function filterSemanticTags(params: {
   semanticTags: string[];

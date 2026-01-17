@@ -9,6 +9,7 @@ const path_1 = __importDefault(require("path"));
 const promises_1 = require("fs/promises");
 const crypto_1 = require("crypto");
 const fast_glob_1 = __importDefault(require("fast-glob"));
+const ignore_1 = __importDefault(require("ignore"));
 const generateBriefForSymbol_1 = require("./llm/generateBriefForSymbol");
 const routingStore_1 = require("./routingStore");
 const metaStore_1 = require("./metaStore");
@@ -47,6 +48,42 @@ function buildMeta(fileHashes) {
         };
     }
     return meta;
+}
+/**
+ * Load .gitignore patterns from project root.
+ */
+async function loadIgnorePatterns(projectRoot) {
+    const ig = (0, ignore_1.default)();
+    const gitignorePath = path_1.default.join(projectRoot, ".gitignore");
+    try {
+        const content = await (0, promises_1.readFile)(gitignorePath, "utf8");
+        ig.add(content);
+    }
+    catch (error) {
+        if (error?.code !== "ENOENT") {
+            throw error;
+        }
+    }
+    return ig;
+}
+/**
+ * Scan source files for all supported languages.
+ */
+async function scanAllLanguageFiles(projectRoot) {
+    const extensions = (0, language_1.getSupportedExtensions)();
+    const patterns = extensions.map((ext) => `**/*.${ext}`);
+    const ig = await loadIgnorePatterns(projectRoot);
+    const matches = await (0, fast_glob_1.default)(patterns, {
+        cwd: projectRoot,
+        onlyFiles: true,
+        dot: false,
+        absolute: true
+    });
+    const filtered = matches.filter((filePath) => {
+        const relative = path_1.default.relative(projectRoot, filePath);
+        return !ig.ignores(relative);
+    });
+    return filtered;
 }
 const ENTRY_REGEX = /^\s*-\s+`([^`]+)`\s*<!--\s*id:\s*([^|]+)\s*\|\s*hash:\s*([^\s|]+)(?:\s*\|\s*impl:\s*([^\s|]+))?(?:\s*\|\s*file:\s*([^|]+))?(?:\s*\|\s*tags_base:\s*\[([^\]]*)\])?(?:\s*\|\s*tags_sem:\s*\[([^\]]*)\])?(?:\s*\|\s*tags:\s*\[([^\]]*)\])?\s*-->/;
 function parseModuleEntries(content) {
@@ -177,8 +214,9 @@ async function buildModuleIndexV3(projectRoot, outDir, options) {
     await resolveBriefsForV3(projectRoot, adapter, briefTasks, symbols, options);
     await writeV3Outputs(outDir, symbols, fileHashes);
 }
-async function collectSymbolsForV3(projectRoot, outDir, reuseExisting, adapter, options) {
-    const files = await adapter.scanSourceFiles(projectRoot);
+async function collectSymbolsForV3(projectRoot, outDir, reuseExisting, defaultAdapter, options) {
+    // Scan all supported language files
+    const files = await scanAllLanguageFiles(projectRoot);
     const fileHashes = {};
     const symbols = [];
     const briefTasks = [];
@@ -190,6 +228,8 @@ async function collectSymbolsForV3(projectRoot, outDir, reuseExisting, adapter, 
     for (const absolutePath of files) {
         currentFile += 1;
         const relativePath = path_1.default.relative(projectRoot, absolutePath);
+        // Get adapter for this specific file type
+        const adapter = (0, language_1.getAdapterForFile)(absolutePath) || defaultAdapter;
         const code = await (0, promises_1.readFile)(absolutePath, "utf8");
         fileHashes[relativePath] = hashContent(code);
         options?.onProgress?.({ current: currentFile, total: totalFiles, filePath: relativePath });
@@ -206,11 +246,12 @@ async function collectSymbolsForV3(projectRoot, outDir, reuseExisting, adapter, 
             const canonicalId = parts.length > 2 ? parts.slice(-2).join("::") : parts.join("::");
             const symbolKey = `${pathModuleHint}::${canonicalId}`;
             const symbolId = `${pathModuleHint}::${rawId}`;
-            const baseTags = (0, tagUtils_1.inferBaseTagsForSymbol)({
+            const baseTags = adapter.inferBaseTags({
                 pathModuleHint,
                 filePath: relativePath,
                 symbolId,
-                brief: ""
+                signature: normalizedSignature,
+                kind: symbol.kind
             });
             const implSnippet = adapter.extractImplementationFromCode(code, normalizedSignature) || "";
             const implHash = hashContent(`${normalizedSignature}\n${implSnippet}`);
