@@ -17,6 +17,7 @@ const signatureUtils_1 = require("./signatureUtils");
 const moduleGrouper_1 = require("./moduleGrouper");
 const tagUtils_1 = require("./tagUtils");
 const language_1 = require("./language");
+const skillsGenerator_1 = require("./skillsGenerator");
 function hashContent(content) {
     return (0, crypto_1.createHash)("sha1").update(content).digest("hex");
 }
@@ -209,6 +210,14 @@ function renderModuleGroup(group) {
     return lines.join("\n");
 }
 async function buildModuleIndexV3(projectRoot, outDir, options) {
+    // Clean output directory before full rebuild
+    try {
+        await (0, promises_1.rm)(outDir, { recursive: true, force: true });
+    }
+    catch {
+        // ignore if directory doesn't exist
+    }
+    await (0, promises_1.mkdir)(outDir, { recursive: true });
     const adapter = (0, language_1.getLanguageAdapter)(options?.languageId);
     const { fileHashes, symbols, briefTasks } = await collectSymbolsForV3(projectRoot, outDir, false, adapter, options);
     await resolveBriefsForV3(projectRoot, adapter, briefTasks, symbols, options);
@@ -361,39 +370,28 @@ async function resolveBriefsForV3(projectRoot, adapter, briefTasks, symbols, opt
 }
 async function writeV3Outputs(outDir, symbols, fileHashes) {
     const groups = await (0, moduleGrouper_1.groupSymbolsToModulesWithLLM)(symbols, { maxSymbolsForLLM: 300 });
-    const modulesDir = path_1.default.join(outDir, "modules");
-    await (0, promises_1.mkdir)(modulesDir, { recursive: true });
-    const desiredModules = new Set(groups.map((group) => `${group.clusterId}.md`));
-    const existingModules = await (0, fast_glob_1.default)("**/*.md", { cwd: modulesDir, onlyFiles: true });
     const routingModules = {};
-    for (const relPath of existingModules) {
-        if (!desiredModules.has(relPath)) {
-            const fullPath = path_1.default.join(modulesDir, relPath);
-            try {
-                await (0, promises_1.unlink)(fullPath);
-            }
-            catch {
-                // ignore delete errors
-            }
-        }
-    }
     for (const group of groups) {
-        const modulePath = path_1.default.join(modulesDir, `${group.clusterId}.md`);
-        await (0, promises_1.writeFile)(modulePath, renderModuleGroup(group), "utf8");
         routingModules[group.clusterId] = group.symbols.map((symbol) => ({
             id: symbol.symbolId,
             declHash: symbol.declHash,
             declLine: symbol.declLine,
             implLine: symbol.implLine,
             filePath: symbol.filePath,
+            signature: symbol.signature,
+            brief: symbol.brief,
             tagsBase: symbol.baseTags,
             tagsSemantic: symbol.semanticTags
         }));
     }
-    const routing = (0, routingStore_1.buildRoutingFromModules)(routingModules);
+    // Load existing routing to preserve tag scores
+    const existingRouting = await (0, routingStore_1.loadRouting)(outDir).catch(() => ({ modules: {}, tagIndex: {}, symbols: {} }));
+    const routing = (0, routingStore_1.buildRoutingFromModules)(routingModules, existingRouting.tagIndex);
     await (0, routingStore_1.saveRouting)(outDir, routing);
     const meta = buildMeta(fileHashes);
     await (0, metaStore_1.saveMeta)(outDir, meta);
+    // Generate Claude Skills files
+    await (0, skillsGenerator_1.generateSkillsFiles)(outDir, symbols);
 }
 async function updateModuleIndexV3(projectRoot, outDir, options) {
     const adapter = (0, language_1.getLanguageAdapter)(options?.languageId);

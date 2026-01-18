@@ -17,6 +17,7 @@
     "onCommand:semanticRoute.autoSkillsDoc",
     "onCommand:semanticRoute.autoSkillsClipboard",
     "onCommand:semanticRoute.openTagGraph",
+    "onCommand:semanticRoute.revealSymbolAtCursor",
     "onView:semanticRoute.tagGraph",
     "onCommand:semanticRoute.updateIndex",
     "onCommand:semanticRoute.searchSkills"
@@ -39,6 +40,10 @@
       {
         "command": "semanticRoute.openTagGraph",
         "title": "Semantic Route: Tag Graph"
+      },
+      {
+        "command": "semanticRoute.revealSymbolAtCursor",
+        "title": "Semantic Route: 在图谱中显示当前符号"
       },
       {
         "command": "semanticRoute.buildIndex",
@@ -140,6 +145,15 @@
           "id": "semanticRoute.tagGraph",
           "name": "Semantic Route: 标签图谱",
           "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "semanticRoute.revealSymbolAtCursor",
+          "when": "editorTextFocus",
+          "group": "navigation@9"
         }
       ]
     }

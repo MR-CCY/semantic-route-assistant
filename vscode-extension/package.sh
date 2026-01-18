@@ -19,7 +19,7 @@ echo "🔨 编译 TypeScript..."
 npm run compile
 
 echo "📦 打包扩展..."
-yes | npx @vscode/vsce package --allow-missing-repository
+yes | npx @vscode/vsce package --allow-missing-repository --no-dependencies
 
 echo ""
 echo "✅ 打包完成！"

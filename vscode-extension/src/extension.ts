@@ -6,8 +6,15 @@ import * as core from "semantic-route-assistant-core";
 import { createHash } from "crypto";
 
 type RoutingJson = {
+  schemaVersion?: number;
   modules: {
     [moduleName: string]: string;
+  };
+  tagIndex?: {
+    [tag: string]: {
+      count: number;
+      score: number;
+    };
   };
   symbols: {
     [symbolId: string]: {
@@ -18,6 +25,7 @@ type RoutingJson = {
       filePath?: string;
       tagsBase?: string[];
       tagsSemantic?: string[];
+      tagsCustom?: string[];
       tags?: string[];
     };
   };
@@ -41,11 +49,14 @@ type TagGraphItem = {
   filePath?: string;
   line?: number;
   module?: string;
+  tagsBase?: string[];
+  tagsSemantic?: string[];
+  tagsCustom?: string[];
 };
 
 type TagGraphNode = {
   tag: string;
-  tagType: "base" | "semantic";
+  tagType: "base" | "semantic" | "custom";
   count: number;
   items: TagGraphItem[];
 };
@@ -99,6 +110,10 @@ function countOccurrences(haystack: string, needle: string): number {
     }
   }
   return count;
+}
+
+function normalizeFilePath(filePath: string): string {
+  return filePath.replace(/\\/g, "/").replace(/^\.\//, "");
 }
 
 async function hasModuleIndex(indexRoot: string): Promise<boolean> {
@@ -223,6 +238,18 @@ function reportModuleChanges(
 }
 
 async function loadRouting(indexRoot: string): Promise<RoutingJson | null> {
+  const loadFromCore = (core as any).loadRouting as
+    | ((root: string) => Promise<RoutingJson>)
+    | undefined;
+  if (loadFromCore) {
+    try {
+      return await loadFromCore(indexRoot);
+    } catch (error: any) {
+      const message = error?.message ? ` ${error.message}` : "";
+      vscode.window.showErrorMessage(`Semantic Route: 索引数据版本不兼容。${message}`);
+      return null;
+    }
+  }
   const routingPath = path.join(indexRoot, "routing.json");
   try {
     const content = await readFile(routingPath, "utf8");
@@ -268,7 +295,8 @@ async function searchSkillsV2(indexRoot: string, query: string): Promise<V2Searc
     const brief = entry?.brief ?? "";
     const tagsBase = (info.tagsBase || info.tags || []).map((tag) => tag.toLowerCase());
     const tagsSemantic = (info.tagsSemantic || []).map((tag) => tag.toLowerCase());
-    const allTags = Array.from(new Set([...tagsSemantic, ...tagsBase]));
+    const tagsCustom = (info.tagsCustom || []).map((tag) => tag.toLowerCase());
+    const allTags = Array.from(new Set([...tagsSemantic, ...tagsBase, ...tagsCustom]));
     const filePath = info.filePath;
 
     if (tagFilters.length > 0) {
@@ -297,6 +325,9 @@ async function searchSkillsV2(indexRoot: string, query: string): Promise<V2Searc
         score += 4;
       }
       if (tagsBase.some((tag) => tag.includes(keyword))) {
+        score += 1;
+      }
+      if (tagsCustom.some((tag) => tag.includes(keyword))) {
         score += 1;
       }
       if (signature.toLowerCase().includes(keyword)) {
@@ -404,18 +435,15 @@ async function buildEntryMapForRouting(
   routing: RoutingJson
 ): Promise<Map<string, { signature: string; brief: string }>> {
   const entryMap = new Map<string, { signature: string; brief: string }>();
-  for (const modulePath of Object.values(routing.modules)) {
-    const resolvedPath = path.join(indexRoot, modulePath);
-    try {
-      const content = await readFile(resolvedPath, "utf8");
-      const parsed = parseModuleEntries(content);
-      for (const [id, entry] of parsed.entries()) {
-        entryMap.set(id, entry);
-      }
-    } catch {
-      // ignore missing module files
-    }
+
+  // Get signature and brief directly from routing.json
+  for (const [symbolId, info] of Object.entries(routing.symbols)) {
+    entryMap.set(symbolId, {
+      signature: (info as any).signature || symbolId,
+      brief: (info as any).brief || ""
+    });
   }
+
   return entryMap;
 }
 
@@ -425,13 +453,24 @@ async function buildTagGraphData(indexRoot: string): Promise<TagGraphNode[]> {
     return [];
   }
   const entryMap = await buildEntryMapForRouting(indexRoot, routing);
-  const tagMap = new Map<string, { tagType: "base" | "semantic"; items: TagGraphItem[] }>();
+  const tagMap = new Map<string, { tagType: "base" | "semantic" | "custom"; items: TagGraphItem[] }>();
+  const tagPriority: Record<TagGraphNode["tagType"], number> = {
+    semantic: 3,
+    base: 2,
+    custom: 1
+  };
 
   for (const [symbolId, info] of Object.entries(routing.symbols)) {
     const semanticTags = (info.tagsSemantic || []).map((tag) => tag.toLowerCase());
     const baseTags = (info.tagsBase || info.tags || []).map((tag) => tag.toLowerCase());
-    const allTags = Array.from(new Set([...semanticTags, ...baseTags].filter(Boolean)));
-    const tags = semanticTags.length > 0 ? semanticTags : baseTags;
+    const customTags = (info.tagsCustom || []).map((tag) => tag.toLowerCase());
+    const allTags = Array.from(new Set([...semanticTags, ...baseTags, ...customTags].filter(Boolean)));
+    const tags =
+      semanticTags.length > 0
+        ? semanticTags
+        : baseTags.length > 0
+        ? baseTags
+        : customTags;
     if (tags.length === 0) {
       continue;
     }
@@ -447,10 +486,13 @@ async function buildTagGraphData(indexRoot: string): Promise<TagGraphNode[]> {
       tags: allTags,
       filePath: info.filePath,
       line,
-      module: info.module
+      module: info.module,
+      tagsBase: baseTags,
+      tagsSemantic: semanticTags,
+      tagsCustom: customTags
     };
 
-    const ensureTag = (tag: string, tagType: "base" | "semantic") => {
+    const ensureTag = (tag: string, tagType: "base" | "semantic" | "custom") => {
       if (!tag) {
         return;
       }
@@ -459,8 +501,8 @@ async function buildTagGraphData(indexRoot: string): Promise<TagGraphNode[]> {
         tagMap.set(tag, { tagType, items: [item] });
         return;
       }
-      if (tagType === "semantic" && existing.tagType === "base") {
-        existing.tagType = "semantic";
+      if (tagPriority[tagType] > tagPriority[existing.tagType]) {
+        existing.tagType = tagType;
       }
       existing.items.push(item);
     };
@@ -470,6 +512,9 @@ async function buildTagGraphData(indexRoot: string): Promise<TagGraphNode[]> {
     }
     for (const tag of baseTags) {
       ensureTag(tag, "base");
+    }
+    for (const tag of customTags) {
+      ensureTag(tag, "custom");
     }
   }
 
@@ -675,12 +720,45 @@ function getTagGraphHtml(): string {
       border: 1px solid rgba(255,255,255,0.2);
       color: var(--muted);
       cursor: pointer;
-      transition: color 0.2s ease, border-color 0.2s ease;
+      transition: all 0.2s ease;
       background: rgba(255,255,255,0.04);
     }
     .tag-chip:hover {
       color: var(--text);
       border-color: var(--accent);
+    }
+    /* Base tag style - purple */
+    .tag-chip.base {
+      background: rgba(139, 92, 246, 0.15);
+      border-color: rgba(167, 139, 250, 0.5);
+      color: #c4b5fd;
+    }
+    .tag-chip.base:hover {
+      background: rgba(139, 92, 246, 0.25);
+      border-color: #a78bfa;
+      color: #f7f4ff;
+    }
+    /* Semantic tag style - gold/yellow */
+    .tag-chip.semantic {
+      background: rgba(251, 191, 36, 0.15);
+      border-color: rgba(251, 191, 36, 0.5);
+      color: #fcd34d;
+    }
+    .tag-chip.semantic:hover {
+      background: rgba(251, 191, 36, 0.25);
+      border-color: #fbbf24;
+      color: #fef3c7;
+    }
+    /* Custom tag style - teal */
+    .tag-chip.custom {
+      background: rgba(56, 189, 248, 0.15);
+      border-color: rgba(56, 189, 248, 0.5);
+      color: #7dd3fc;
+    }
+    .tag-chip.custom:hover {
+      background: rgba(56, 189, 248, 0.25);
+      border-color: #38bdf8;
+      color: #e0f2fe;
     }
     .list {
       overflow: auto;
@@ -721,10 +799,183 @@ function getTagGraphHtml(): string {
       display: flex;
       gap: 6px;
       flex-wrap: wrap;
+      align-items: center;
     }
     @media (max-width: 900px) {
       .layout { grid-template-rows: 1fr 45%; }
     }
+    /* Edit Description */
+    .edit-box-container {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+    .edit-box {
+      flex: 1;
+      background: rgba(0,0,0,0.2);
+      border: 1px solid var(--bubble-border);
+      color: var(--text);
+      font-size: 13px;
+      padding: 4px;
+      border-radius: 4px;
+      outline: none;
+    }
+    .edit-btns {
+      display: flex;
+      gap: 4px;
+    }
+    .btn-icon {
+      cursor: pointer;
+      padding: 2px;
+      border-radius: 3px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      font-size: 12px;
+      background: rgba(255,255,255,0.1);
+    }
+    .btn-icon:hover {
+      background: rgba(255,255,255,0.2);
+    }
+    .btn-check { color: #4caf50; }
+    .btn-cross { color: #f44336; }
+
+    /* Add Tag Button */
+    .add-tag-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.1);
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1;
+      cursor: pointer;
+      margin-left: 4px;
+      user-select: none;
+      align-self: center;
+    }
+    .add-tag-btn:hover {
+      background: var(--accent);
+    }
+
+    /* Tag Popup */
+    .tag-popup-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 100;
+      display: none;
+    }
+    .tag-popup-overlay.active {
+      display: block;
+    }
+    .tag-popup {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 400px;
+      background: #1b1032;
+      border: 1px solid var(--bubble-border);
+      border-radius: 8px;
+      padding: 16px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .popup-search-row {
+      display: flex;
+      gap: 6px;
+    }
+    .popup-filter-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .popup-filter-actions button {
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      background: rgba(127, 91, 255, 0.2);
+      color: var(--text);
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .popup-filter-actions button.active {
+      background: rgba(255, 211, 107, 0.2);
+      border-color: rgba(255, 211, 107, 0.7);
+    }
+    .popup-search {
+      flex: 1;
+      background: rgba(0,0,0,0.2);
+      border: 1px solid rgba(255,255,255,0.1);
+      padding: 8px;
+      color: var(--text);
+      border-radius: 4px;
+      box-sizing: border-box;
+      outline: none;
+    }
+    .popup-add-btn {
+      width: 32px;
+      background: rgba(255,255,255,0.1);
+      border: none;
+      color: var(--text);
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .popup-add-btn:hover {
+      background: var(--accent);
+    }
+    .popup-list {
+      max-height: 200px;
+      overflow-y: auto;
+      border: 1px solid rgba(255,255,255,0.05);
+      border-radius: 4px;
+      padding: 4px;
+    }
+    .popup-item {
+      padding: 4px 8px;
+      cursor: pointer;
+      border-radius: 3px;
+      display: flex;
+      justify-content: space-between;
+    }
+    .popup-item:hover {
+      background: rgba(255,255,255,0.1);
+    }
+    .popup-tags-selected {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        min-height: 30px;
+        padding: 4px;
+        background: rgba(0,0,0,0.2);
+        border-radius: 4px;
+    }
+    .popup-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .popup-btn {
+      padding: 4px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      border: none;
+    }
+    .btn-save { background: var(--accent); color: white; }
+    .btn-cancel { background: rgba(255,255,255,0.1); color: var(--text); }
   </style>
 </head>
 <body>
@@ -739,6 +990,7 @@ function getTagGraphHtml(): string {
           <button data-filter="all" class="active">全部</button>
           <button data-filter="base">基础</button>
           <button data-filter="semantic">语义</button>
+          <button data-filter="custom">自定义</button>
         </div>
         <button class="refresh-btn" id="refresh-btn">刷新</button>
       </div>
@@ -751,6 +1003,26 @@ function getTagGraphHtml(): string {
         <div class="selected-tags" id="selected-tags"></div>
       </div>
       <div class="list" id="list"></div>
+    </div>
+  </div>
+  <div class="tag-popup-overlay" id="tag-popup-overlay">
+    <div class="tag-popup">
+      <div class="popup-search-row">
+        <input type="text" class="popup-search" id="popup-search" placeholder="搜索或创建标签..." />
+        <button class="popup-add-btn" id="popup-add-new" title="作为新标签添加">+</button>
+      </div>
+      <div class="popup-filter-actions" id="popup-filter-actions">
+        <button data-filter="all" class="active">全部</button>
+        <button data-filter="base">基础</button>
+        <button data-filter="semantic">语义</button>
+        <button data-filter="custom">自定义</button>
+      </div>
+      <div class="popup-list" id="popup-list"></div>
+      <div class="popup-tags-selected" id="popup-tags-selected"></div>
+      <div class="popup-actions">
+        <button class="popup-btn btn-cancel" id="popup-cancel">取消</button>
+        <button class="popup-btn btn-save" id="popup-save">保存</button>
+      </div>
     </div>
   </div>
   <script nonce="${nonce}">
@@ -769,10 +1041,25 @@ function getTagGraphHtml(): string {
     let tagData = [];
     let selectedTags = [];
     let activeFilter = 'all';
+    let pendingSelection = null;
     let layout = null;
     let hoverTag = null;
     let suggestionIndex = -1;
     let suggestionItems = [];
+    
+    // Popup state
+    const tagPopupOverlay = document.getElementById('tag-popup-overlay');
+    const popupSearch = document.getElementById('popup-search');
+    const popupFilterActions = document.getElementById('popup-filter-actions');
+    const popupList = document.getElementById('popup-list');
+    const popupTagsSelected = document.getElementById('popup-tags-selected');
+    const popupSave = document.getElementById('popup-save');
+    const popupCancel = document.getElementById('popup-cancel');
+    const popupAddNew = document.getElementById('popup-add-new');
+    let popupSelectedTags = [];
+    let popupCurrentSymbolId = null;
+    let popupActiveFilter = 'all';
+    
     let rafId = 0;
     let canvasWidth = 0;
     let canvasHeight = 0;
@@ -1012,29 +1299,97 @@ function getTagGraphHtml(): string {
       return null;
     }
 
+    function getBubblePalette(tagType) {
+      if (tagType === 'semantic') {
+        return {
+          glow: '#fbbf24',
+          glowFill: 'rgba(251, 191, 36, 0.25)',
+          highlight: 'rgba(255, 243, 196, 0.35)',
+          mid: 'rgba(251, 191, 36, 0.15)',
+          hoverMid: 'rgba(251, 191, 36, 0.25)',
+          activeMid: 'rgba(251, 191, 36, 0.25)',
+          deep: 'rgba(140, 92, 24, 0.32)',
+          edge: 'rgba(70, 45, 15, 0.2)',
+          stroke: 'rgba(251, 191, 36, 0.5)',
+          rimLight: 'rgba(255, 255, 255, 0.6)',
+          rimDark: 'rgba(110, 70, 20, 0.3)',
+          hoverStroke: '#fbbf24',
+          activeStroke: '#fbbf24'
+        };
+      }
+      if (tagType === 'custom') {
+        return {
+          glow: '#38bdf8',
+          glowFill: 'rgba(56, 189, 248, 0.28)',
+          highlight: 'rgba(220, 248, 255, 0.35)',
+          mid: 'rgba(130, 215, 245, 0.38)',
+          hoverMid: 'rgba(150, 228, 255, 0.44)',
+          activeMid: 'rgba(170, 238, 255, 0.5)',
+          deep: 'rgba(28, 96, 126, 0.35)',
+          edge: 'rgba(15, 50, 70, 0.22)',
+          stroke: 'rgba(200, 245, 255, 0.45)',
+          rimLight: 'rgba(255, 255, 255, 0.7)',
+          rimDark: 'rgba(20, 80, 110, 0.35)',
+          hoverStroke: 'rgba(175, 235, 255, 0.65)',
+          activeStroke: '#44c8ff'
+        };
+      }
+      return {
+        glow: '#a78bfa',
+        glowFill: 'rgba(139, 92, 246, 0.3)',
+        highlight: 'rgba(240, 234, 255, 0.35)',
+        mid: 'rgba(170, 145, 240, 0.38)',
+        hoverMid: 'rgba(185, 165, 250, 0.44)',
+        activeMid: 'rgba(200, 185, 255, 0.5)',
+        deep: 'rgba(78, 48, 150, 0.36)',
+        edge: 'rgba(40, 25, 70, 0.22)',
+        stroke: 'rgba(220, 205, 255, 0.45)',
+        rimLight: 'rgba(255, 255, 255, 0.72)',
+        rimDark: 'rgba(70, 45, 130, 0.35)',
+        hoverStroke: 'rgba(195, 175, 255, 0.65)',
+        activeStroke: '#b7a4ff'
+      };
+    }
+
     function drawBubble(node) {
       const active = selectedTags.includes(node.tag);
       const hovered = hoverTag === node.tag;
-      const isSemantic = node.tagType === 'semantic';
-      const baseFill = 'rgba(102, 72, 200, 0.35)';
-      const semanticFill = 'rgba(255, 208, 120, 0.26)';
+      const palette = getBubblePalette(node.tagType);
+      const midTone = active ? palette.activeMid : hovered ? palette.hoverMid : palette.mid;
+      const shadowAlpha = active ? 0.2 : hovered ? 0.16 : 0.12;
+      const shadowBlur = active ? 16 : hovered ? 12 : 10;
+      const shadowOffset = active ? 4 : hovered ? 3 : 2;
+      
+      // Draw glow effect for selected bubbles
+      if (active) {
+        ctx.save();
+        ctx.shadowColor = palette.glow;
+        ctx.shadowBlur = 20;
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
+        ctx.fillStyle = palette.glowFill;
+        ctx.fill();
+        ctx.restore();
+      }
+      
+      ctx.save();
+      ctx.shadowColor = 'rgba(0, 0, 0, ' + shadowAlpha + ')';
+      ctx.shadowBlur = shadowBlur;
+      ctx.shadowOffsetY = shadowOffset;
       ctx.beginPath();
       ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
-      if (active) {
-        ctx.fillStyle = isSemantic ? 'rgba(255, 211, 107, 0.4)' : 'rgba(127, 91, 255, 0.45)';
-      } else if (hovered) {
-        ctx.fillStyle = isSemantic ? 'rgba(255, 211, 107, 0.32)' : 'rgba(127, 91, 255, 0.3)';
-      } else {
-        ctx.fillStyle = isSemantic ? semanticFill : baseFill;
-      }
+      ctx.fillStyle = midTone;
       ctx.fill();
-      ctx.lineWidth = active || hovered ? 2 : 1.2;
+      ctx.restore();
+      
+      // Thicker border for selected
+      ctx.lineWidth = active ? 3.2 : (hovered ? 2 : 1.4);
       if (active) {
-        ctx.strokeStyle = isSemantic ? '#ffd36b' : '#b39bff';
+        ctx.strokeStyle = palette.activeStroke;
       } else if (hovered) {
-        ctx.strokeStyle = isSemantic ? 'rgba(255, 211, 107, 0.8)' : 'rgba(155, 120, 255, 0.9)';
+        ctx.strokeStyle = palette.hoverStroke;
       } else {
-        ctx.strokeStyle = isSemantic ? 'rgba(255, 211, 107, 0.6)' : 'rgba(155, 120, 255, 0.7)';
+        ctx.strokeStyle = palette.stroke;
       }
       ctx.stroke();
 
@@ -1068,6 +1423,93 @@ function getTagGraphHtml(): string {
       ctx.restore();
     }
 
+    let popupInitialTags = [];
+    const popupTagPriority = { semantic: 3, base: 2, custom: 1 };
+
+    function applyTagSelection(tags, focusTagName) {
+      const normalized = Array.from(
+        new Set((tags || []).map((tag) => String(tag).toLowerCase().trim()).filter(Boolean))
+      );
+      selectedTags = normalized;
+      updateList();
+      if (focusTagName) {
+        const focus = String(focusTagName).toLowerCase().trim();
+        if (focus) {
+          focusTag(focus);
+        }
+      } else if (normalized.length === 1) {
+        focusTag(normalized[0]);
+      }
+    }
+
+    function normalizeTagValue(value) {
+      return value.trim().toLowerCase();
+    }
+
+    function buildPopupTags(tagGroups) {
+      const map = new Map();
+      tagGroups.forEach(({ tagType, tags }) => {
+        (tags || []).forEach((tag) => {
+          const normalized = normalizeTagValue(tag);
+          if (!normalized) return;
+          const existing = map.get(normalized);
+          if (!existing || popupTagPriority[tagType] > popupTagPriority[existing.tagType]) {
+            map.set(normalized, { tag: normalized, tagType });
+          }
+        });
+      });
+      return Array.from(map.values());
+    }
+
+    function buildPopupTagMap(tags) {
+      const map = new Map();
+      tags.forEach((item) => {
+        map.set(item.tag, item.tagType);
+      });
+      return map;
+    }
+
+    function addPopupTag(tag, tagType) {
+      const normalized = normalizeTagValue(tag);
+      if (!normalized) return;
+      const existing = popupSelectedTags.find((item) => item.tag === normalized);
+      if (existing) {
+        if (popupTagPriority[tagType] > popupTagPriority[existing.tagType]) {
+          existing.tagType = tagType;
+        }
+        return;
+      }
+      popupSelectedTags.push({ tag: normalized, tagType });
+    }
+
+    function setPopupFilter(filter) {
+      popupActiveFilter = filter || 'all';
+      if (!popupFilterActions) return;
+      popupFilterActions
+        .querySelectorAll('button')
+        .forEach((item) => item.classList.remove('active'));
+      const activeButton = popupFilterActions.querySelector(
+        '[data-filter="' + popupActiveFilter + '"]'
+      );
+      if (activeButton) {
+        activeButton.classList.add('active');
+      }
+    }
+
+    function resolveItemTagType(item, tag) {
+      if (item.tagsSemantic && item.tagsSemantic.includes(tag)) {
+        return 'semantic';
+      }
+      if (item.tagsBase && item.tagsBase.includes(tag)) {
+        return 'base';
+      }
+      if (item.tagsCustom && item.tagsCustom.includes(tag)) {
+        return 'custom';
+      }
+      const tagNode = tagData.find((n) => n.tag === tag);
+      return tagNode ? tagNode.tagType : 'base';
+    }
+
     function updateList() {
       list.innerHTML = '';
       selectedTagsEl.innerHTML = '';
@@ -1078,7 +1520,9 @@ function getTagGraphHtml(): string {
       }
       selectedTags.forEach((tag) => {
         const chip = document.createElement('span');
-        chip.className = 'tag-chip';
+        const tagNode = tagData.find((item) => item.tag === tag);
+        const tagType = tagNode ? tagNode.tagType : 'base';
+        chip.className = 'tag-chip ' + tagType;
         chip.textContent = '#' + tag;
         chip.dataset.tag = tag;
         chip.addEventListener('click', () => removeTag(tag));
@@ -1103,25 +1547,231 @@ function getTagGraphHtml(): string {
       filteredItems.forEach((item) => {
         const el = document.createElement('div');
         el.className = 'item';
-        const tags = (item.tags || [])
-          .map((tag) => '<span class="tag-chip" data-tag="' + tag + '">#' + tag + '</span>')
+        
+        const tagsHtml = (item.tags || [])
+          .map((tag) => {
+            const tagType = resolveItemTagType(item, tag);
+            return '<span class="tag-chip ' + tagType + '" data-tag="' + tag + '">#' + tag + '</span>';
+          })
           .join('');
+          
         el.innerHTML =
           '<div class="signature">' + item.signature + '</div>' +
-          '<div class="brief">' + (item.brief || '') + '</div>' +
-          (tags ? '<div class="tag-row">' + tags + '</div>' : '');
-        el.addEventListener('click', () => {
+          '<div class="brief-container" title="双击编辑">' + (item.brief || '') + '</div>' +
+          '<div class="tag-row">' + tagsHtml + '<div class="add-tag-btn" title="管理标签">+</div></div>';
+        
+        el.addEventListener('click', (e) => {
+          if (e.target.closest('.tag-chip') || e.target.closest('.add-tag-btn') || e.target.closest('.edit-box-container') || e.target.closest('input')) return;
           vscode.postMessage({
             type: 'open',
             filePath: item.filePath,
             line: item.line
           });
         });
+
+        const briefEl = el.querySelector('.brief-container');
+        briefEl.addEventListener('dblclick', (e) => {
+             e.stopPropagation();
+             editDescription(item, briefEl);
+        });
+        
+        const addBtn = el.querySelector('.add-tag-btn');
+        addBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            showTagPopup(
+              item.id,
+              item.tagsBase || [],
+              item.tagsSemantic || [],
+              item.tagsCustom || []
+            );
+        });
+
         list.appendChild(el);
       });
+      
       wireTagChips(list);
       requestRender();
     }
+
+    function editDescription(item, container) {
+      const original = item.brief || '';
+      const encoded = original.replace(/"/g, '&quot;');
+      
+      container.innerHTML = 
+        '<div class="edit-box-container">' +
+        '<input class="edit-box" value="' + encoded + '" />' +
+        '<div class="edit-btns">' +
+        '<div class="btn-icon btn-check" title="保存">✓</div>' +
+        '<div class="btn-icon btn-cross" title="取消">✕</div>' +
+        '</div>' +
+        '</div>';
+      
+      const input = container.querySelector('input');
+      const check = container.querySelector('.btn-check');
+      const cross = container.querySelector('.btn-cross');
+      
+      input.focus();
+      
+      input.addEventListener('click', e => e.stopPropagation());
+      input.addEventListener('dblclick', e => e.stopPropagation());
+      
+      const save = () => {
+        const val = input.value.trim();
+        if (val !== original) {
+           vscode.postMessage({ type: 'updateDescription', symbolId: item.id, description: val });
+           item.brief = val; // Optimistic update
+           container.textContent = val;
+        } else {
+           container.textContent = original;
+        }
+      };
+      
+      const cancel = () => {
+        container.textContent = original;
+      };
+      
+      check.addEventListener('click', (e) => { e.stopPropagation(); save(); });
+      cross.addEventListener('click', (e) => { e.stopPropagation(); cancel(); });
+      
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') save();
+        if (e.key === 'Escape') cancel();
+      });
+    }
+
+    function showTagPopup(symbolId, tagsBase, tagsSemantic, tagsCustom) {
+      popupCurrentSymbolId = symbolId;
+      popupInitialTags = buildPopupTags([
+        { tagType: 'semantic', tags: tagsSemantic },
+        { tagType: 'base', tags: tagsBase },
+        { tagType: 'custom', tags: tagsCustom }
+      ]);
+      popupSelectedTags = [...popupInitialTags];
+      
+      setPopupFilter('all');
+      updatePopupSelected();
+      popupSearch.value = '';
+      updatePopupList('');
+      tagPopupOverlay.classList.add('active');
+      popupSearch.focus();
+    }
+
+    function hideTagPopup() {
+      tagPopupOverlay.classList.remove('active');
+      popupCurrentSymbolId = null;
+    }
+
+    function updatePopupSelected() {
+      popupTagsSelected.innerHTML = '';
+      popupSelectedTags.forEach((entry) => {
+        const tag = entry.tag;
+        const tagNode = tagData.find((n) => n.tag === tag);
+        const tagType = entry.tagType || (tagNode ? tagNode.tagType : 'custom');
+        const chip = document.createElement('span');
+        chip.className = 'tag-chip ' + tagType;
+        chip.textContent = '#' + tag;
+        chip.style.margin = '2px';
+        chip.style.cursor = 'pointer';
+        chip.title = '点击删除';
+        chip.addEventListener('click', () => {
+          popupSelectedTags = popupSelectedTags.filter((item) => item.tag !== tag);
+          updatePopupSelected();
+        });
+        popupTagsSelected.appendChild(chip);
+      });
+    }
+
+    function updatePopupList(query) {
+       popupList.innerHTML = '';
+       const q = query.trim().toLowerCase();
+       // Filter tagData unique tags
+       const pool =
+         popupActiveFilter === 'all'
+           ? tagData
+           : tagData.filter((item) => item.tagType === popupActiveFilter);
+       const matches = pool
+           .filter(n => n.tag.includes(q))
+           .sort((a, b) => b.count - a.count)
+           .slice(0, 20);
+       
+       matches.forEach(node => {
+         const el = document.createElement('div');
+         el.className = 'popup-item';
+         el.innerHTML = '<span>' + node.tag + '</span><span>' + node.count + '</span>';
+         el.addEventListener('click', () => {
+           addPopupTag(node.tag, node.tagType || 'base');
+           updatePopupSelected();
+         });
+         popupList.appendChild(el);
+       });
+    }
+
+    popupCancel.addEventListener('click', hideTagPopup);
+    
+    popupSave.addEventListener('click', () => {
+       if (!popupCurrentSymbolId) return;
+       const oldTags = popupInitialTags;
+       const newTags = popupSelectedTags;
+       const oldMap = buildPopupTagMap(oldTags);
+       const newMap = buildPopupTagMap(newTags);
+       
+       const toAdd = [];
+       const toRemove = [];
+       newMap.forEach((tagType, tag) => {
+         if (!oldMap.has(tag)) {
+           toAdd.push({ tag, tagType });
+           return;
+         }
+         const oldType = oldMap.get(tag);
+         if (oldType !== tagType) {
+           toRemove.push({ tag, tagType: oldType });
+           toAdd.push({ tag, tagType });
+         }
+       });
+       oldMap.forEach((tagType, tag) => {
+         if (!newMap.has(tag)) {
+           toRemove.push({ tag, tagType });
+         }
+       });
+       
+       // Send single batched message to prevent race conditions
+       if (toAdd.length > 0 || toRemove.length > 0) {
+         vscode.postMessage({
+           type: 'updateSymbolTags',
+           symbolId: popupCurrentSymbolId,
+           tagsToAdd: toAdd,
+           tagsToRemove: toRemove
+         });
+       }
+       
+       hideTagPopup();
+    });
+
+    popupSearch.addEventListener('input', (e) => {
+       updatePopupList(e.target.value);
+    });
+
+    if (popupFilterActions) {
+      popupFilterActions.querySelectorAll('button').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          setPopupFilter(btn.dataset.filter || 'all');
+          updatePopupList(popupSearch.value || '');
+        });
+      });
+    }
+
+    popupAddNew.addEventListener('click', () => {
+       const val = normalizeTagValue(popupSearch.value || '');
+       if (!val) {
+         return;
+       }
+       const existing = tagData.find((item) => item.tag === val);
+       const tagType = existing ? existing.tagType : 'custom';
+       addPopupTag(val, tagType);
+       updatePopupSelected();
+       popupSearch.value = '';
+       updatePopupList('');
+    });
 
     function wireTagChips(container) {
       container.querySelectorAll('.tag-chip').forEach((chip) => {
@@ -1222,8 +1872,23 @@ function getTagGraphHtml(): string {
       if (message.type === 'data') {
         tagData = message.tags || [];
         buildLayout();
-        updateList();
+        if (!message.skipList) {
+          updateList();
+        }
         updateSuggestions(searchInput.value || '');
+        if (pendingSelection) {
+          applyTagSelection(pendingSelection.tags || [], pendingSelection.focusTag);
+          pendingSelection = null;
+        }
+      }
+      if (message.type === 'selectTags') {
+        const tags = message.tags || [];
+        const focusTagName = message.focusTag || tags[0];
+        if (!tagData.length) {
+          pendingSelection = { tags, focusTag: focusTagName };
+          return;
+        }
+        applyTagSelection(tags, focusTagName);
       }
       if (message.type === 'status') {
         panelMeta.textContent = message.text || '';
@@ -1386,8 +2051,9 @@ function getTagGraphHtml(): string {
 
 class TagGraphViewProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
+  private pendingSelection?: { tags: string[]; focusTag?: string };
 
-  constructor(private readonly context: vscode.ExtensionContext) {}
+  constructor(private readonly context: vscode.ExtensionContext) { }
 
   async resolveWebviewView(view: vscode.WebviewView): Promise<void> {
     this.view = view;
@@ -1405,6 +2071,36 @@ class TagGraphViewProvider implements vscode.WebviewViewProvider {
       if (message.type === "open") {
         await this.openLocation(message.filePath, message.line);
       }
+
+      // New handlers
+      if (message.type === "updateDescription") {
+        const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (root) {
+          const indexRoot = await resolveIndexRoot(root);
+          if (indexRoot) {
+            await (core as any).updateSymbolDescription(indexRoot, message.symbolId, message.description);
+            // Refresh layout but skip list update to preserve scroll/state
+            await this.postData(true);
+          }
+        }
+      }
+
+      // Batched tag update to prevent race conditions
+      if (message.type === "updateSymbolTags") {
+        const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (root) {
+          const indexRoot = await resolveIndexRoot(root);
+          if (indexRoot) {
+            await (core as any).updateSymbolTags(
+              indexRoot,
+              message.symbolId,
+              message.tagsToAdd || [],
+              message.tagsToRemove || []
+            );
+            await this.postData();
+          }
+        }
+      }
     });
 
     view.onDidChangeVisibility(() => {
@@ -1414,6 +2110,15 @@ class TagGraphViewProvider implements vscode.WebviewViewProvider {
     });
 
     await this.postData();
+    if (this.pendingSelection) {
+      const selection = this.pendingSelection;
+      this.pendingSelection = undefined;
+      this.view?.webview.postMessage({
+        type: "selectTags",
+        tags: selection.tags,
+        focusTag: selection.focusTag
+      });
+    }
   }
 
   reveal(): void {
@@ -1422,7 +2127,25 @@ class TagGraphViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async postData(): Promise<void> {
+  async selectTags(tags: string[], focusTag?: string): Promise<void> {
+    if (!tags.length) {
+      return;
+    }
+    if (!this.view) {
+      this.pendingSelection = { tags, focusTag };
+      try {
+        await vscode.commands.executeCommand("semanticRoute.tagGraph.focus");
+      } catch {
+        // ignore focus errors; pending selection will apply on next view open
+      }
+      return;
+    }
+    this.reveal();
+    await this.postData();
+    this.view.webview.postMessage({ type: "selectTags", tags, focusTag });
+  }
+
+  private async postData(skipList: boolean = false): Promise<void> {
     const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (!root) {
       this.view?.webview.postMessage({
@@ -1442,7 +2165,7 @@ class TagGraphViewProvider implements vscode.WebviewViewProvider {
     }
 
     const tags = await buildTagGraphData(indexRoot);
-    this.view?.webview.postMessage({ type: "data", tags });
+    this.view?.webview.postMessage({ type: "data", tags, skipList });
   }
 
   private async openLocation(filePath?: string, line?: number): Promise<void> {
@@ -1757,8 +2480,8 @@ export function activate(context: vscode.ExtensionContext): void {
     const folders = vscode.workspace.workspaceFolders;
 
     if (!folders || folders.length === 0) {
-    vscode.window.showErrorMessage("Semantic Route: 未找到工作区目录。");
-    return;
+      vscode.window.showErrorMessage("Semantic Route: 未找到工作区目录。");
+      return;
     }
 
     const projectRoot = folders[0].uri.fsPath;
@@ -1766,14 +2489,14 @@ export function activate(context: vscode.ExtensionContext): void {
     const briefConcurrency = config.get<number>("llm.briefConcurrency", 4);
     const buildV3 = (core as any).buildModuleIndexV3 as
       | ((
-          projectRoot: string,
-          outDir: string,
-          options?: {
-            onProgress?: (info: { current: number; total: number; filePath?: string }) => void;
-            onBriefProgress?: (info: { current: number; total: number }) => void;
-            briefConcurrency?: number;
-          }
-        ) => Promise<void>)
+        projectRoot: string,
+        outDir: string,
+        options?: {
+          onProgress?: (info: { current: number; total: number; filePath?: string }) => void;
+          onBriefProgress?: (info: { current: number; total: number }) => void;
+          briefConcurrency?: number;
+        }
+      ) => Promise<void>)
       | undefined;
 
     if (!buildV3) {
@@ -1786,8 +2509,6 @@ export function activate(context: vscode.ExtensionContext): void {
     const hasIndex = await hasModuleIndex(outDir);
     if (!hasIndex) {
       vscode.window.showInformationMessage("Semantic Route: 索引为空，改为执行构建。");
-      await vscode.commands.executeCommand("semanticRoute.buildIndex");
-      return;
     }
     const beforeSnapshot = await snapshotModuleFiles(modulesDir);
 
@@ -1800,6 +2521,11 @@ export function activate(context: vscode.ExtensionContext): void {
       async (progress) => {
         progress.report({ message: "准备环境..." });
         await applyLlmEnv(context);
+
+        progress.report({ message: "准备环境..." });
+        await applyLlmEnv(context);
+
+        // Configure skills generation (Removed)
 
         progress.report({ message: "正在生成模块索引..." });
         await buildV3(projectRoot, outDir, {
@@ -1844,14 +2570,14 @@ export function activate(context: vscode.ExtensionContext): void {
     const briefConcurrency = config.get<number>("llm.briefConcurrency", 4);
     const updateV3 = (core as any).updateModuleIndexV3 as
       | ((
-          projectRoot: string,
-          outDir: string,
-          options?: {
-            onProgress?: (info: { current: number; total: number; filePath?: string }) => void;
-            onBriefProgress?: (info: { current: number; total: number }) => void;
-            briefConcurrency?: number;
-          }
-        ) => Promise<void>)
+        projectRoot: string,
+        outDir: string,
+        options?: {
+          onProgress?: (info: { current: number; total: number; filePath?: string }) => void;
+          onBriefProgress?: (info: { current: number; total: number }) => void;
+          briefConcurrency?: number;
+        }
+      ) => Promise<void>)
       | undefined;
 
     if (!updateV3) {
@@ -1872,6 +2598,11 @@ export function activate(context: vscode.ExtensionContext): void {
       async (progress) => {
         progress.report({ message: "准备环境..." });
         await applyLlmEnv(context);
+
+        progress.report({ message: "准备环境..." });
+        await applyLlmEnv(context);
+
+        // Configure skills generation (Removed)
 
         progress.report({ message: "正在生成模块索引..." });
         await updateV3(projectRoot, outDir, {
@@ -2148,6 +2879,90 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   );
 
+  const revealSymbolCmd = vscode.commands.registerCommand(
+    "semanticRoute.revealSymbolAtCursor",
+    async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        vscode.window.showErrorMessage("Semantic Route: 未找到活动编辑器。");
+        return;
+      }
+
+      const workspaceFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+      if (!workspaceFolder) {
+        vscode.window.showErrorMessage("Semantic Route: 未找到工作区目录。");
+        return;
+      }
+
+      const projectRoot = workspaceFolder.uri.fsPath;
+      const indexRoot = await resolveIndexRoot(projectRoot);
+      if (!indexRoot) {
+        vscode.window.showErrorMessage(
+          "Semantic Route: 未找到索引目录，请先运行 Build/Update Index。"
+        );
+        return;
+      }
+
+      const routing = await loadRouting(indexRoot);
+      if (!routing) {
+        vscode.window.showErrorMessage("Semantic Route: 索引数据不可用。");
+        return;
+      }
+
+      const relativePath = normalizeFilePath(
+        path.relative(projectRoot, editor.document.uri.fsPath)
+      );
+      const cursorLine = editor.selection.active.line + 1;
+
+      const candidates = Object.entries(routing.symbols)
+        .map(([symbolId, info]) => {
+          const infoPath = info.filePath ? normalizeFilePath(info.filePath) : "";
+          if (!infoPath || infoPath !== relativePath) {
+            return null;
+          }
+          const positions = [info.declLine, info.implLine].filter(
+            (line): line is number => typeof line === "number"
+          );
+          if (!positions.length) {
+            return null;
+          }
+          const distance = Math.min(...positions.map((line) => Math.abs(cursorLine - line)));
+          return { symbolId, info, distance };
+        })
+        .filter(
+          (item): item is { symbolId: string; info: RoutingJson["symbols"][string]; distance: number } =>
+            Boolean(item)
+        );
+
+      if (!candidates.length) {
+        vscode.window.showInformationMessage("Semantic Route: 未匹配到当前光标所在符号。");
+        return;
+      }
+
+      candidates.sort((a, b) => a.distance - b.distance);
+      const target = candidates[0];
+      const tags = Array.from(
+        new Set(
+          [
+            ...(target.info.tagsSemantic || []),
+            ...(target.info.tagsBase || []),
+            ...(target.info.tagsCustom || []),
+            ...(target.info.tags || [])
+          ]
+            .map((tag) => tag.toLowerCase().trim())
+            .filter(Boolean)
+        )
+      );
+
+      if (tags.length === 0) {
+        vscode.window.showInformationMessage("Semantic Route: 当前符号没有可用标签。");
+        return;
+      }
+
+      await tagGraphProvider.selectTags(tags, tags[0]);
+    }
+  );
+
   const openTagGraphCmd = vscode.commands.registerCommand("semanticRoute.openTagGraph", () => {
     tagGraphProvider.reveal();
   });
@@ -2159,6 +2974,7 @@ export function activate(context: vscode.ExtensionContext): void {
     searchCmd,
     autoSkillsDocCmd,
     autoSkillsClipboardCmd,
+    revealSymbolCmd,
     openTagGraphCmd
   );
 }

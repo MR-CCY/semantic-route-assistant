@@ -1,16 +1,17 @@
 import path from "path";
-import { mkdir, readFile, unlink, writeFile } from "fs/promises";
+import { mkdir, readFile, rm, unlink, writeFile } from "fs/promises";
 import { createHash } from "crypto";
 import fg from "fast-glob";
 import ignore from "ignore";
 import { generateBriefAndTagsForSymbol } from "./llm/generateBriefForSymbol";
-import { buildRoutingFromModules, saveRouting } from "./routingStore";
+import { buildRoutingFromModules, loadRouting, saveRouting } from "./routingStore";
 import { loadMeta, saveMeta, Meta } from "./metaStore";
 import { hashSignature, normalizeSignature } from "./signatureUtils";
 import { Cluster, SymbolRecord } from "./v3Types";
 import { groupSymbolsToModulesWithLLM } from "./moduleGrouper";
 import { filterSemanticTags } from "./tagUtils";
 import { getLanguageAdapter, getAdapterForFile, getSupportedExtensions, LanguageAdapter } from "./language";
+import { generateSkillsFiles } from "./skillsGenerator";
 
 function hashContent(content: string): string {
   return createHash("sha1").update(content).digest("hex");
@@ -256,6 +257,14 @@ export async function buildModuleIndexV3(
     briefConcurrency?: number;
   }
 ): Promise<void> {
+  // Clean output directory before full rebuild
+  try {
+    await rm(outDir, { recursive: true, force: true });
+  } catch {
+    // ignore if directory doesn't exist
+  }
+  await mkdir(outDir, { recursive: true });
+
   const adapter = getLanguageAdapter(options?.languageId);
   const {
     fileHashes,
@@ -497,10 +506,6 @@ async function writeV3Outputs(
   fileHashes: Record<string, string>
 ): Promise<void> {
   const groups = await groupSymbolsToModulesWithLLM(symbols, { maxSymbolsForLLM: 300 });
-  const modulesDir = path.join(outDir, "modules");
-  await mkdir(modulesDir, { recursive: true });
-  const desiredModules = new Set(groups.map((group) => `${group.clusterId}.md`));
-  const existingModules = await fg("**/*.md", { cwd: modulesDir, onlyFiles: true });
 
   const routingModules: Record<
     string,
@@ -510,41 +515,37 @@ async function writeV3Outputs(
       declLine?: number;
       implLine?: number;
       filePath?: string;
+      signature?: string;
+      brief?: string;
       tagsBase?: string[];
       tagsSemantic?: string[];
     }>
   > = {};
 
-  for (const relPath of existingModules) {
-    if (!desiredModules.has(relPath)) {
-      const fullPath = path.join(modulesDir, relPath);
-      try {
-        await unlink(fullPath);
-      } catch {
-        // ignore delete errors
-      }
-    }
-  }
-
   for (const group of groups) {
-    const modulePath = path.join(modulesDir, `${group.clusterId}.md`);
-    await writeFile(modulePath, renderModuleGroup(group), "utf8");
     routingModules[group.clusterId] = group.symbols.map((symbol) => ({
       id: symbol.symbolId,
       declHash: symbol.declHash,
       declLine: symbol.declLine,
       implLine: symbol.implLine,
       filePath: symbol.filePath,
+      signature: symbol.signature,
+      brief: symbol.brief,
       tagsBase: symbol.baseTags,
       tagsSemantic: symbol.semanticTags
     }));
   }
 
-  const routing = buildRoutingFromModules(routingModules);
+  // Load existing routing to preserve tag scores
+  const existingRouting = await loadRouting(outDir).catch(() => ({ modules: {}, tagIndex: {}, symbols: {} }));
+  const routing = buildRoutingFromModules(routingModules, existingRouting.tagIndex);
   await saveRouting(outDir, routing);
 
   const meta = buildMeta(fileHashes);
   await saveMeta(outDir, meta);
+
+  // Generate Claude Skills files
+  await generateSkillsFiles(outDir, symbols);
 }
 
 export async function updateModuleIndexV3(

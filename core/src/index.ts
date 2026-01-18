@@ -10,6 +10,9 @@ import { searchSkills as searchSkillsImpl } from "./searchSkills";
 export { buildIndexV2, updateIndexV2 } from "./indexV2";
 // v3: in-memory clustering -> modules/*.md
 export { buildModuleIndexV3, updateModuleIndexV3 } from "./indexV3";
+// Skills generation config (Removed)
+// export { setSkillsConfig, getSkillsConfig, DEFAULT_WHITELIST_TAGS } from "./skillsGenerator";
+// export type { SkillsConfig } from "./skillsGenerator";
 
 export { summarizeFile } from "./llmClient";
 export { searchSkillsImpl as searchSkills };
@@ -62,3 +65,15 @@ export async function updateIndex(projectRoot: string, outDir: string): Promise<
 
   await saveMeta(outDir, meta);
 }
+
+// Routing Store
+export {
+  ROUTING_SCHEMA_VERSION,
+  loadRouting,
+  saveRouting,
+  incrementTagScore,
+  updateSymbolDescription,
+  addSymbolTag,
+  removeSymbolTag,
+  updateSymbolTags
+} from "./routingStore";
