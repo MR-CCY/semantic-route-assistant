@@ -1,10 +1,10 @@
 import path from "path";
-import { mkdir, readFile, rm, unlink, writeFile } from "fs/promises";
+import { mkdir, readFile, rename, rm, unlink, writeFile } from "fs/promises";
 import { createHash } from "crypto";
 import fg from "fast-glob";
 import ignore from "ignore";
 import { generateBriefAndTagsForSymbol } from "./llm/generateBriefForSymbol";
-import { buildRoutingFromModules, loadRouting, saveRouting } from "./routingStore";
+import { buildRoutingFromModules, loadRouting, saveRouting, RoutingJson } from "./routingStore";
 import { loadMeta, saveMeta, Meta } from "./metaStore";
 import { hashSignature, normalizeSignature } from "./signatureUtils";
 import { Cluster, SymbolRecord } from "./v3Types";
@@ -217,6 +217,40 @@ function getChangedFiles(previousMeta: Meta, fileHashes: Record<string, string>)
   return changed;
 }
 
+function normalizeTag(tag: string): string {
+  return tag.toLowerCase().trim();
+}
+
+function collectExistingCustomTags(existingRouting: RoutingJson): Map<string, string[]> {
+  const customTagsBySymbol = new Map<string, string[]>();
+  const customIndex = existingRouting.tagIndex?.custom ?? {};
+
+  for (const [symbolId, info] of Object.entries(existingRouting.symbols || {})) {
+    const legacyCustom = info.tagsCustom ?? [];
+    let customTags = legacyCustom;
+
+    if (customTags.length === 0) {
+      const tags = info.tags ?? [];
+      if (tags.length > 0) {
+        customTags = tags.filter((tag) => {
+          const normalized = normalizeTag(tag);
+          return normalized && customIndex[normalized];
+        });
+      }
+    }
+
+    const normalizedTags = Array.from(
+      new Set(customTags.map(normalizeTag).filter(Boolean))
+    );
+
+    if (normalizedTags.length > 0) {
+      customTagsBySymbol.set(symbolId, normalizedTags);
+    }
+  }
+
+  return customTagsBySymbol;
+}
+
 function renderModuleGroup(group: Cluster): string {
   const lines: string[] = [];
   lines.push(`# Module: ${group.title}`);
@@ -255,25 +289,62 @@ export async function buildModuleIndexV3(
     onBriefProgress?: (info: { current: number; total: number }) => void;
     languageId?: string;
     briefConcurrency?: number;
+    writeSkillsFiles?: boolean;
   }
 ): Promise<void> {
-  // Clean output directory before full rebuild
+  const existingRouting = await loadRouting(outDir).catch(() => ({
+    modules: {},
+    tagIndex: { base: {}, semantic: {}, custom: {} },
+    symbols: {}
+  }));
+
+  const stagingDir = `${outDir}.tmp`;
+  const backupDir = `${outDir}.bak`;
+  let backupCreated = false;
+
   try {
-    await rm(outDir, { recursive: true, force: true });
-  } catch {
-    // ignore if directory doesn't exist
+    await rm(stagingDir, { recursive: true, force: true });
+    await mkdir(stagingDir, { recursive: true });
+
+    const adapter = getLanguageAdapter(options?.languageId);
+    const {
+      fileHashes,
+      symbols,
+      briefTasks
+    } = await collectSymbolsForV3(projectRoot, outDir, false, adapter, options);
+    const writeSkillsFiles = options?.writeSkillsFiles ?? true;
+
+    await resolveBriefsForV3(projectRoot, adapter, briefTasks, symbols, options);
+    await writeV3Outputs(stagingDir, symbols, fileHashes, existingRouting, writeSkillsFiles);
+
+    await rm(backupDir, { recursive: true, force: true });
+    try {
+      await rename(outDir, backupDir);
+      backupCreated = true;
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+    }
+    await rename(stagingDir, outDir);
+    if (backupCreated) {
+      await rm(backupDir, { recursive: true, force: true });
+    }
+  } catch (error) {
+    if (backupCreated) {
+      try {
+        await rename(backupDir, outDir);
+      } catch {
+        // ignore restore failure to preserve original error
+      }
+    }
+    try {
+      await rm(stagingDir, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup errors
+    }
+    throw error;
   }
-  await mkdir(outDir, { recursive: true });
-
-  const adapter = getLanguageAdapter(options?.languageId);
-  const {
-    fileHashes,
-    symbols,
-    briefTasks
-  } = await collectSymbolsForV3(projectRoot, outDir, false, adapter, options);
-
-  await resolveBriefsForV3(projectRoot, adapter, briefTasks, symbols, options);
-  await writeV3Outputs(outDir, symbols, fileHashes);
 }
 
 async function collectSymbolsForV3(
@@ -503,9 +574,18 @@ async function resolveBriefsForV3(
 async function writeV3Outputs(
   outDir: string,
   symbols: SymbolRecord[],
-  fileHashes: Record<string, string>
+  fileHashes: Record<string, string>,
+  existingRouting?: RoutingJson,
+  writeSkillsFiles?: boolean
 ): Promise<void> {
   const groups = await groupSymbolsToModulesWithLLM(symbols, { maxSymbolsForLLM: 300 });
+
+  const resolvedExistingRouting = existingRouting ?? await loadRouting(outDir).catch(() => ({
+    modules: {},
+    tagIndex: { base: {}, semantic: {}, custom: {} },
+    symbols: {}
+  }));
+  const customTagsBySymbol = collectExistingCustomTags(resolvedExistingRouting);
 
   const routingModules: Record<
     string,
@@ -519,33 +599,44 @@ async function writeV3Outputs(
       brief?: string;
       tagsBase?: string[];
       tagsSemantic?: string[];
+      tagsCustom?: string[];
     }>
   > = {};
 
   for (const group of groups) {
-    routingModules[group.clusterId] = group.symbols.map((symbol) => ({
-      id: symbol.symbolId,
-      declHash: symbol.declHash,
-      declLine: symbol.declLine,
-      implLine: symbol.implLine,
-      filePath: symbol.filePath,
-      signature: symbol.signature,
-      brief: symbol.brief,
-      tagsBase: symbol.baseTags,
-      tagsSemantic: symbol.semanticTags
-    }));
+    routingModules[group.clusterId] = group.symbols.map((symbol) => {
+      const baseSet = new Set((symbol.baseTags || []).map(normalizeTag));
+      const semanticSet = new Set((symbol.semanticTags || []).map(normalizeTag));
+      const preservedCustom = (customTagsBySymbol.get(symbol.symbolId) || []).filter(
+        (tag) => !baseSet.has(tag) && !semanticSet.has(tag)
+      );
+
+      return {
+        id: symbol.symbolId,
+        declHash: symbol.declHash,
+        declLine: symbol.declLine,
+        implLine: symbol.implLine,
+        filePath: symbol.filePath,
+        signature: symbol.signature,
+        brief: symbol.brief,
+        tagsBase: symbol.baseTags,
+        tagsSemantic: symbol.semanticTags,
+        tagsCustom: preservedCustom.length > 0 ? preservedCustom : undefined
+      };
+    });
   }
 
-  // Load existing routing to preserve tag scores
-  const existingRouting = await loadRouting(outDir).catch(() => ({ modules: {}, tagIndex: {}, symbols: {} }));
-  const routing = buildRoutingFromModules(routingModules, existingRouting.tagIndex);
+  // Preserve tag scores while rebuilding
+  const routing = buildRoutingFromModules(routingModules, resolvedExistingRouting.tagIndex);
   await saveRouting(outDir, routing);
 
   const meta = buildMeta(fileHashes);
   await saveMeta(outDir, meta);
 
-  // Generate Claude Skills files
-  await generateSkillsFiles(outDir, symbols);
+  if (writeSkillsFiles) {
+    // Generate Claude Skills files
+    await generateSkillsFiles(outDir, symbols);
+  }
 }
 
 export async function updateModuleIndexV3(
@@ -559,6 +650,11 @@ export async function updateModuleIndexV3(
   }
 ): Promise<void> {
   const adapter = getLanguageAdapter(options?.languageId);
+  const existingRouting = await loadRouting(outDir).catch(() => ({
+    modules: {},
+    tagIndex: { base: {}, semantic: {}, custom: {} },
+    symbols: {}
+  }));
   const previousMeta = await loadMeta(outDir);
   const { fileHashes, symbols, briefTasks } = await collectSymbolsForV3(
     projectRoot,
@@ -574,5 +670,5 @@ export async function updateModuleIndexV3(
   }
 
   await resolveBriefsForV3(projectRoot, adapter, briefTasks, symbols, options);
-  await writeV3Outputs(outDir, symbols, fileHashes);
+  await writeV3Outputs(outDir, symbols, fileHashes, existingRouting, false);
 }

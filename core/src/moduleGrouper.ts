@@ -2,7 +2,9 @@ import path from "path";
 import { Cluster, SymbolRecord } from "./v3Types";
 
 export type ClusterOptions = {
+  /** @deprecated Use maxSymbolsPerCluster instead */
   maxSymbolsForLLM?: number;
+  maxSymbolsPerCluster?: number;
 };
 
 const DEFAULT_MAX_SYMBOLS = 300;
@@ -153,11 +155,15 @@ function groupByTags(symbols: SymbolRecord[]): Cluster[] {
   return clusters;
 }
 
-export async function groupSymbolsToModulesWithLLM(
+/**
+ * Group symbols into clusters by tags or path.
+ * Uses tag frequency to determine primary grouping, falls back to path-based grouping.
+ */
+export async function groupSymbolsByTagsOrPath(
   symbols: SymbolRecord[],
   opts?: ClusterOptions
 ): Promise<Cluster[]> {
-  const maxSymbols = opts?.maxSymbolsForLLM ?? DEFAULT_MAX_SYMBOLS;
+  const maxSymbols = opts?.maxSymbolsPerCluster ?? opts?.maxSymbolsForLLM ?? DEFAULT_MAX_SYMBOLS;
 
   if (symbols.length === 0) {
     return [];
@@ -169,3 +175,6 @@ export async function groupSymbolsToModulesWithLLM(
 
   return groupByTags(symbols);
 }
+
+/** @deprecated Use groupSymbolsByTagsOrPath instead */
+export const groupSymbolsToModulesWithLLM = groupSymbolsByTagsOrPath;

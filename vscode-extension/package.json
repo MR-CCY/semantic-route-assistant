@@ -122,6 +122,11 @@
           "default": 8,
           "description": "Auto Skills 自动选取的 Top N 数量。"
         },
+        "semanticRoute.skills.writeOnBuild": {
+          "type": "boolean",
+          "default": true,
+          "description": "在 Build Index 时生成并写入 Skills 文件。"
+        },
         "semanticRoute.llm.baseUrl": {
           "type": "string",
           "default": "",

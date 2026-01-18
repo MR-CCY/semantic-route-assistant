@@ -3,74 +3,114 @@ import { mkdir, stat, writeFile } from "fs/promises";
 import type { SymbolRecord } from "./v3Types";
 
 /**
- * Generate .skills/find-existing-code/SKILL.md - Claude Skills standard
+ * Generate .skills/find-existing-code/SKILL.md - Constraint-based AI Protocol
+ * 
+ * This Skill enforces a "reuse-first" policy:
+ * AI must search for existing capabilities before implementing new code.
  */
 export function generateClaudeSkillMd(): string {
-    return `---
+  return `---
 name: find-existing-code
-description: 在写新代码前，先查找项目中已有的类似功能
+description: 复用优先：新写/重构前先查能力；查找具备某些能力的函数/类也用此技能
 ---
 
-# Find Existing Code
+# Semantic Routing Protocol (low-entropy)
 
-## When to Use
-- 需要实现新功能时
-- 看到可能重复的代码时
-- 想了解项目已有能力时
+核心原则：
+1) 写新代码前 → 先查询能力表，优先复用
+2) 重构/修改前 → 先查询依赖，评估影响
 
-## How It Works
-This skill uses a tag-based search system with automatic usage tracking:
-- **routing.json**: Contains all symbols with tags and a \`tagIndex\` that tracks tag usage frequency
-- **search scripts**: Python/Bash scripts to query symbols by tag and increment tag scores
+---
 
-## Steps
-1. 确定要搜索的标签（如 \`http\`, \`async\`, \`cache\` 等）- 可以指定多个标签
-2. 选择查询模式：
-   - **AND 模式（默认）**：符号必须同时拥有所有标签（精确查找）
-   - **OR 模式（-o）**：符号拥有任一标签即可（宽泛探索）
-3. 执行搜索脚本：
-   - Python (AND): \`python scripts/search.py /path/to/.ai_context tag1 tag2\`
-   - Python (OR): \`python scripts/search.py -o /path/to/.ai_context tag1 tag2\`
-   - Bash: \`bash scripts/search.sh /path/to/.ai_context tag\`
-4. 脚本返回匹配的符号列表（按匹配度排序），并自动增加所有查询标签的 score
+## 快速路径
 
-## Example
+1) 确定索引目录：\`.ai_context\`
+2) 执行查询脚本（本地，无网络）
+3) 有匹配 → 阅读最小实现片段 → 复用或申请重写
+4) 无匹配 → 直接实现
+
+脚本路径：\`scripts/search.py\`
+
+---
+
+## 行为规则（简化）
+
+### Rule 1: 查询优先
+写代码前必须执行查询：
 \`\`\`bash
-# AND 模式：查找同时有 http 和 async 的异步 HTTP 功能
-python scripts/search.py .ai_context http async
-
-# OR 模式：查找所有网络相关功能
-python scripts/search.py -o .ai_context http websocket grpc
-
-# Output:
-# Searching for tags (AND): http, async
-# ---
-# src/net/api_client.cpp:42 - net::ApiClient::sendRequest
-#   brief: 发送 HTTP 请求到指定 URL
-#   tags: http, request, async
-#   matched: 2 tag(s)
-#
-# Found 1 symbol(s)
-# Tag scores incremented for: http, async
+python scripts/search.py <indexRoot> <tag1> <tag2>
+\`\`\`
+OR 模式（广泛搜索）：
+\`\`\`bash
+python scripts/search.py -o <indexRoot> <tag1> <tag2>
 \`\`\`
 
-## Tag Index
-The \`routing.json\` file maintains a \`tagIndex\` with usage statistics:
-\`\`\`json
-{
-  "tagIndex": {
-    "http": { "count": 10, "score": 5 },
-    "async": { "count": 7, "score": 3 }
-  }
-}
+### Rule 2: 阅读验证
+有匹配时只做三件事：
+1) **阅读最小实现**：跳转到 \`filePath:declLine\` 判断能力
+2) **确认满足**：能满足就复用，不要改
+3) **减少输入**：只汇报能力列表与结论，不贴源码
+
+### Rule 3: 重写审批
+如果匹配存在但需要重写，必须：
+1. **说明原因**：解释为什么现有实现不满足需求
+2. **请求审批**：等待用户确认后再重写
+3. **示例回复**：
+
 \`\`\`
-- \`count\`: Number of symbols with this tag
-- \`score\`: How many times this tag has been searched (auto-incremented)
+[FOUND] net::HttpClient::get 
+[REVIEW] 阅读实现后发现不支持自定义 Headers
+[PROPOSE] 建议重写/扩展此函数，原因：需要支持 Authorization header
+请确认后我再实现。
+\`\`\`
+
+**无匹配时**：直接实现新功能。
+
+### Rule 4: 重构影响分析
+重构/修改前只输出最小影响面（只回答：谁在调用该函数、谁在使用该类型、数据结构变更影响哪些模块）：
+
+\`\`\`
+[REFACTOR] 修改 RoutingJson
+[QUERY] python scripts/search.py <indexRoot> routing tagIndex
+[IMPACT] 列出受影响符号（最多 5 个）
+[ACTION] 依次更新所有受影响的函数
+\`\`\`
+
+---
+
+## 查询协议（短）
+
+### Step 1: 确定标签
+\`\`\`
+"发送 HTTP 请求" → http request
+"修改路由结构" → routing tagIndex
+\`\`\`
+
+---
+
+## 行为示例（最小）
+
+\`\`\`
+[QUERY] python scripts/search.py <indexRoot> http get
+[FOUND] net::ApiClient::get - 发送 HTTP GET 请求
+[REVIEW] 阅读 src/net/api_client.cpp:42，确认支持 URL 参数
+[ACTION] 直接调用 net::ApiClient::get(url)
+\`\`\`
+
+---
+
+## 目标
+
+- **防重复**: 查到匹配时必须复用
+- **可重写**: 但需说明原因 + 审批
+- **安全重构**: 修改前分析影响范围
+- **省 Token**: 只喂能力表，不喂实现细节
 `;
 }
 
+
 function generateSearchPyScript(): string {
-    return `#!/usr/bin/env python3
+  return `#!/usr/bin/env python3
 """
 search.py - Search symbols by tags and increment tag scores
 Usage: 
@@ -96,11 +136,13 @@ def search_symbols(context_dir: str, query_tags: list[str], use_or: bool = False
     query_set = {tag.lower().strip() for tag in query_tags}
     results = []
     
-    # Search symbols
+    # Search symbols - use unified tags array
     for symbol_id, info in data.get('symbols', {}).items():
-        tags_semantic = [t.lower() for t in info.get('tagsSemantic', [])]
-        tags_base = [t.lower() for t in info.get('tagsBase', [])]
-        all_tags = set(tags_semantic + tags_base)
+        # Use unified tags array (or fallback to legacy for migration)
+        symbol_tags = [t.lower() for t in info.get('tags', 
+            info.get('tagsBase', []) + info.get('tagsSemantic', []) + info.get('tagsCustom', [])
+        )]
+        all_tags = set(symbol_tags)
         
         # Calculate matches
         matched_tags = []
@@ -119,7 +161,7 @@ def search_symbols(context_dir: str, query_tags: list[str], use_or: bool = False
                     'file_path': info.get('filePath', 'unknown'),
                     'line': info.get('declLine', 0),
                     'brief': info.get('brief', 'N/A'),
-                    'tags': info.get('tagsSemantic', []) + info.get('tagsBase', []),
+                    'tags': symbol_tags,
                     'match_count': len(matched_tags)
                 })
         else:
@@ -130,7 +172,7 @@ def search_symbols(context_dir: str, query_tags: list[str], use_or: bool = False
                     'file_path': info.get('filePath', 'unknown'),
                     'line': info.get('declLine', 0),
                     'brief': info.get('brief', 'N/A'),
-                    'tags': info.get('tagsSemantic', []) + info.get('tagsBase', []),
+                    'tags': symbol_tags,
                     'match_count': len(matched_tags)
                 })
     
@@ -159,16 +201,20 @@ def search_symbols(context_dir: str, query_tags: list[str], use_or: bool = False
 
 
 def increment_tag_score(context_dir: str, tag: str, data: dict):
-    """Increment the score for a tag"""
+    """Increment the score for a tag in categorized tagIndex"""
     tag_index = data.get('tagIndex', {})
     
-    if tag in tag_index:
-        tag_index[tag]['score'] = tag_index[tag].get('score', 0) + 1
-        
-        # Save back to file
-        routing_path = Path(context_dir) / "routing.json"
-        with open(routing_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+    # Search in all categories
+    for category in ['base', 'semantic', 'custom']:
+        cat_index = tag_index.get(category, {})
+        if tag in cat_index:
+            cat_index[tag]['score'] = cat_index[tag].get('score', 0) + 1
+            
+            # Save back to file
+            routing_path = Path(context_dir) / "routing.json"
+            with open(routing_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            return
 
 
 if __name__ == '__main__':
@@ -192,7 +238,7 @@ if __name__ == '__main__':
 }
 
 function generateSearchShScript(): string {
-    return `#!/bin/bash
+  return `#!/bin/bash
 # search.sh - Search symbols by tag and increment tag score
 # Usage: search.sh <path-to-.ai_context> <tag>
 
@@ -266,46 +312,46 @@ fi
  * NOTE: skills.md and skills_compact.json are no longer generated as we use search scripts.
  */
 export async function generateSkillsFiles(
-    outDir: string,
-    symbols: SymbolRecord[],
-    projectName: string = "Project"
+  outDir: string,
+  symbols: SymbolRecord[],
+  projectName: string = "Project"
 ): Promise<void> {
 
-    // Generate SKILL.md and scripts for Claude and Codex (global skills directory)
-    const homeDir = process.env.HOME || process.env.USERPROFILE || "";
-    if (homeDir) {
-        const skillName = "find-existing-code";
-        const skillContent = generateClaudeSkillMd();
-        const pyScript = generateSearchPyScript();
-        const shScript = generateSearchShScript();
+  // Generate SKILL.md and scripts for Claude and Codex (global skills directory)
+  const homeDir = process.env.HOME || process.env.USERPROFILE || "";
+  if (homeDir) {
+    const skillName = "find-existing-code";
+    const skillContent = generateClaudeSkillMd();
+    const pyScript = generateSearchPyScript();
+    const shScript = generateSearchShScript();
 
-        // Skills directories for different AI tools
-        const skillsDirs = [
-            path.join(homeDir, ".claude", "skills", skillName),  // Claude
-            path.join(homeDir, ".codex", "skills", skillName)    // OpenAI Codex
-        ];
+    // Skills directories for different AI tools
+    const skillsDirs = [
+      path.join(homeDir, ".claude", "skills", skillName),  // Claude
+      path.join(homeDir, ".codex", "skills", skillName)    // OpenAI Codex
+    ];
 
-        for (const skillDir of skillsDirs) {
-            const skillPath = path.join(skillDir, "SKILL.md");
-            const scriptsDir = path.join(skillDir, "scripts");
+    for (const skillDir of skillsDirs) {
+      const skillPath = path.join(skillDir, "SKILL.md");
+      const scriptsDir = path.join(skillDir, "scripts");
 
-            try {
-                // Check if file already exists
-                await stat(skillPath);
-                // File exists, skip
-            } catch {
-                // File doesn't exist, create it
-                await mkdir(skillDir, { recursive: true });
-                await writeFile(skillPath, skillContent, "utf8");
+      try {
+        // Check if file already exists
+        await stat(skillPath);
+        // File exists, skip
+      } catch {
+        // File doesn't exist, create it
+        await mkdir(skillDir, { recursive: true });
+        await writeFile(skillPath, skillContent, "utf8");
 
-                // Deploy scripts
-                await mkdir(scriptsDir, { recursive: true });
-                await writeFile(path.join(scriptsDir, "search.py"), pyScript, "utf8");
-                await writeFile(path.join(scriptsDir, "search.sh"), shScript, "utf8");
+        // Deploy scripts
+        await mkdir(scriptsDir, { recursive: true });
+        await writeFile(path.join(scriptsDir, "search.py"), pyScript, "utf8");
+        await writeFile(path.join(scriptsDir, "search.sh"), shScript, "utf8");
 
-                // Also write copy to local scripts dir for reference/dev
-                // (Optional, but good for consistency)
-            }
-        }
+        // Also write copy to local scripts dir for reference/dev
+        // (Optional, but good for consistency)
+      }
     }
+  }
 }

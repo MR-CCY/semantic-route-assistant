@@ -77,3 +77,6 @@ export {
   removeSymbolTag,
   updateSymbolTags
 } from "./routingStore";
+
+// Export types for consumers
+export type { RoutingJson, TagIndexEntry, TagType, TagChange } from "./routingStore";

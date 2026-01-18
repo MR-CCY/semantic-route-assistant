@@ -4,6 +4,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ROUTING_SCHEMA_VERSION = void 0;
+exports.findTagType = findTagType;
+exports.getTagFromAnyCategory = getTagFromAnyCategory;
 exports.buildRoutingFromModules = buildRoutingFromModules;
 exports.loadRouting = loadRouting;
 exports.incrementTagScore = incrementTagScore;
@@ -14,18 +16,58 @@ exports.updateSymbolTags = updateSymbolTags;
 exports.saveRouting = saveRouting;
 const path_1 = __importDefault(require("path"));
 const promises_1 = require("fs/promises");
-exports.ROUTING_SCHEMA_VERSION = 2;
+exports.ROUTING_SCHEMA_VERSION = 3;
+/**
+ * Helper to create empty categorized tag index
+ */
+function createEmptyTagIndex() {
+    return { base: {}, semantic: {}, custom: {} };
+}
+/**
+ * Helper to get or create tag entry in categorized index
+ */
+function getTagEntry(tagIndex, tag, tagType) {
+    if (!tagIndex[tagType][tag]) {
+        tagIndex[tagType][tag] = { count: 0, score: 0 };
+    }
+    return tagIndex[tagType][tag];
+}
+/**
+ * Helper to find tag type in categorized index
+ */
+function findTagType(tagIndex, tag) {
+    if (tagIndex.base[tag])
+        return "base";
+    if (tagIndex.semantic[tag])
+        return "semantic";
+    if (tagIndex.custom[tag])
+        return "custom";
+    return undefined;
+}
+/**
+ * Helper to get tag entry from any category
+ */
+function getTagFromAnyCategory(tagIndex, tag) {
+    return tagIndex.base[tag] || tagIndex.semantic[tag] || tagIndex.custom[tag];
+}
 function buildRoutingFromModules(moduleEntries, existingTagIndex) {
     const routing = {
         schemaVersion: exports.ROUTING_SCHEMA_VERSION,
         modules: {},
-        tagIndex: {},
+        tagIndex: createEmptyTagIndex(),
         symbols: {}
     };
-    const tagCounts = new Map();
     for (const [moduleName, entries] of Object.entries(moduleEntries)) {
         routing.modules[moduleName] = `./modules/${moduleName}.md`;
         for (const entry of entries) {
+            // Merge all tags into unified array
+            const allTags = [
+                ...(entry.tagsBase || []),
+                ...(entry.tagsSemantic || []),
+                ...(entry.tagsCustom || [])
+            ].map(t => t.toLowerCase().trim()).filter(Boolean);
+            // Remove duplicates
+            const uniqueTags = [...new Set(allTags)];
             routing.symbols[entry.id] = {
                 module: moduleName,
                 declHash: entry.declHash,
@@ -34,66 +76,102 @@ function buildRoutingFromModules(moduleEntries, existingTagIndex) {
                 filePath: entry.filePath,
                 signature: entry.signature,
                 brief: entry.brief,
-                tagsBase: entry.tagsBase,
-                tagsSemantic: entry.tagsSemantic,
-                tagsCustom: entry.tagsCustom,
-                tags: entry.tags
+                tags: uniqueTags
             };
-            // Count tag usage
-            const allTags = [
-                ...(entry.tagsSemantic || []),
-                ...(entry.tagsBase || []),
-                ...(entry.tagsCustom || []),
-                ...(entry.tags || [])
-            ];
-            for (const tag of allTags) {
+            // Count tags by type in tagIndex
+            for (const tag of entry.tagsBase || []) {
                 const normalized = tag.toLowerCase().trim();
-                if (normalized) {
-                    tagCounts.set(normalized, (tagCounts.get(normalized) || 0) + 1);
+                if (!normalized)
+                    continue;
+                const entry = getTagEntry(routing.tagIndex, normalized, "base");
+                entry.count++;
+                // Preserve existing score
+                if (existingTagIndex?.base[normalized]) {
+                    entry.score = existingTagIndex.base[normalized].score;
+                }
+            }
+            for (const tag of entry.tagsSemantic || []) {
+                const normalized = tag.toLowerCase().trim();
+                if (!normalized)
+                    continue;
+                const entry = getTagEntry(routing.tagIndex, normalized, "semantic");
+                entry.count++;
+                if (existingTagIndex?.semantic[normalized]) {
+                    entry.score = existingTagIndex.semantic[normalized].score;
+                }
+            }
+            for (const tag of entry.tagsCustom || []) {
+                const normalized = tag.toLowerCase().trim();
+                if (!normalized)
+                    continue;
+                const entry = getTagEntry(routing.tagIndex, normalized, "custom");
+                entry.count++;
+                if (existingTagIndex?.custom[normalized]) {
+                    entry.score = existingTagIndex.custom[normalized].score;
                 }
             }
         }
     }
-    // Build tagIndex, preserving scores from existing index
-    for (const [tag, count] of tagCounts) {
-        routing.tagIndex[tag] = {
-            count,
-            score: existingTagIndex?.[tag]?.score || 0
-        };
-    }
     return routing;
 }
-function rebuildTagIndex(routing) {
-    const tagCounts = new Map();
-    for (const info of Object.values(routing.symbols || {})) {
-        const allTags = [
-            ...(info.tagsSemantic || []),
-            ...(info.tagsBase || []),
-            ...(info.tagsCustom || []),
-            ...(info.tags || [])
-        ];
-        for (const tag of allTags) {
+/**
+ * Rebuild categorized tagIndex from symbols (for migration)
+ * Also migrates legacy tagsBase/tagsSemantic/tagsCustom to unified tags array
+ */
+function migrateAndRebuildTagIndex(routing) {
+    const tagIndex = createEmptyTagIndex();
+    // Check if this is v2 format (flat tagIndex) - need to preserve scores
+    const legacyScores = new Map();
+    if (routing.tagIndex && !("base" in routing.tagIndex)) {
+        // v2 format: flat tagIndex
+        const flatIndex = routing.tagIndex;
+        for (const [tag, entry] of Object.entries(flatIndex)) {
+            legacyScores.set(tag, entry.score || 0);
+        }
+    }
+    for (const [symbolId, info] of Object.entries(routing.symbols || {})) {
+        // Process legacy tag arrays and build categorized index
+        const baseTags = info.tagsBase || [];
+        const semanticTags = info.tagsSemantic || [];
+        const customTags = info.tagsCustom || [];
+        // Migrate to unified tags array if not present
+        if (!info.tags || info.tags.length === 0) {
+            const allTags = [...baseTags, ...semanticTags, ...customTags]
+                .map(t => t.toLowerCase().trim())
+                .filter(Boolean);
+            info.tags = [...new Set(allTags)];
+        }
+        // Update tagIndex with type info
+        for (const tag of baseTags) {
             const normalized = tag.toLowerCase().trim();
-            if (!normalized) {
+            if (!normalized)
                 continue;
-            }
-            tagCounts.set(normalized, (tagCounts.get(normalized) || 0) + 1);
+            const entry = getTagEntry(tagIndex, normalized, "base");
+            entry.count++;
+            entry.score = legacyScores.get(normalized) || entry.score;
         }
-    }
-    const nextIndex = {};
-    const existingIndex = routing.tagIndex || {};
-    for (const [tag, count] of tagCounts) {
-        nextIndex[tag] = {
-            count,
-            score: existingIndex[tag]?.score || 0
-        };
-    }
-    for (const [tag, entry] of Object.entries(existingIndex)) {
-        if (!nextIndex[tag]) {
-            nextIndex[tag] = { count: 0, score: entry.score || 0 };
+        for (const tag of semanticTags) {
+            const normalized = tag.toLowerCase().trim();
+            if (!normalized)
+                continue;
+            const entry = getTagEntry(tagIndex, normalized, "semantic");
+            entry.count++;
+            entry.score = legacyScores.get(normalized) || entry.score;
         }
+        for (const tag of customTags) {
+            const normalized = tag.toLowerCase().trim();
+            if (!normalized)
+                continue;
+            const entry = getTagEntry(tagIndex, normalized, "custom");
+            entry.count++;
+            entry.score = legacyScores.get(normalized) || entry.score;
+        }
+        // Clear legacy fields after migration
+        delete info.tagsBase;
+        delete info.tagsSemantic;
+        delete info.tagsCustom;
     }
-    return nextIndex;
+    return tagIndex;
 }
 function normalizeRouting(routing) {
     let migrated = false;
@@ -101,17 +179,15 @@ function normalizeRouting(routing) {
     if (currentVersion > exports.ROUTING_SCHEMA_VERSION) {
         throw new Error(`Unsupported routing schema version: ${currentVersion}`);
     }
-    if (!routing.tagIndex) {
-        routing.tagIndex = {};
-        migrated = true;
-    }
+    // Migrate from v1/v2 to v3
     if (currentVersion < exports.ROUTING_SCHEMA_VERSION) {
-        routing.tagIndex = rebuildTagIndex(routing);
+        routing.tagIndex = migrateAndRebuildTagIndex(routing);
         routing.schemaVersion = exports.ROUTING_SCHEMA_VERSION;
         migrated = true;
     }
-    else if (routing.schemaVersion !== exports.ROUTING_SCHEMA_VERSION) {
-        routing.schemaVersion = exports.ROUTING_SCHEMA_VERSION;
+    else if (!routing.tagIndex || !("base" in routing.tagIndex)) {
+        // Ensure v3 structure
+        routing.tagIndex = createEmptyTagIndex();
         migrated = true;
     }
     return { routing, migrated };
@@ -132,7 +208,7 @@ async function loadRouting(indexRoot) {
             return {
                 schemaVersion: exports.ROUTING_SCHEMA_VERSION,
                 modules: {},
-                tagIndex: {},
+                tagIndex: createEmptyTagIndex(),
                 symbols: {}
             };
         }
@@ -145,8 +221,10 @@ async function loadRouting(indexRoot) {
 async function incrementTagScore(indexRoot, tag) {
     const routing = await loadRouting(indexRoot);
     const normalizedTag = tag.toLowerCase().trim();
-    if (routing.tagIndex[normalizedTag]) {
-        routing.tagIndex[normalizedTag].score++;
+    // Find tag in any category and increment score
+    const tagType = findTagType(routing.tagIndex, normalizedTag);
+    if (tagType) {
+        routing.tagIndex[tagType][normalizedTag].score++;
         await saveRouting(indexRoot, routing);
     }
 }
@@ -161,46 +239,44 @@ async function updateSymbolDescription(indexRoot, symbolId, description) {
     }
 }
 /**
- * Add a semantic tag to a symbol
+ * Add a tag to a symbol (defaults to semantic type)
  */
-async function addSymbolTag(indexRoot, symbolId, tag) {
+async function addSymbolTag(indexRoot, symbolId, tag, tagType = "semantic") {
     const routing = await loadRouting(indexRoot);
     const symbol = routing.symbols[symbolId];
     if (symbol) {
         const normalizedTag = tag.toLowerCase().trim();
         if (!normalizedTag)
             return;
-        // Initialize tagsSemantic if not present
-        if (!symbol.tagsSemantic) {
-            symbol.tagsSemantic = [];
+        // Initialize tags if not present
+        if (!symbol.tags) {
+            symbol.tags = [];
         }
         // Avoid duplicates
-        if (!symbol.tagsSemantic.includes(normalizedTag)) {
-            symbol.tagsSemantic.push(normalizedTag);
-            // Update tag index
-            if (!routing.tagIndex[normalizedTag]) {
-                routing.tagIndex[normalizedTag] = { count: 0, score: 0 };
-            }
-            routing.tagIndex[normalizedTag].count++;
+        if (!symbol.tags.includes(normalizedTag)) {
+            symbol.tags.push(normalizedTag);
+            // Update categorized tag index
+            const entry = getTagEntry(routing.tagIndex, normalizedTag, tagType);
+            entry.count++;
             await saveRouting(indexRoot, routing);
         }
     }
 }
 /**
- * Remove a semantic tag from a symbol
+ * Remove a tag from a symbol
  */
 async function removeSymbolTag(indexRoot, symbolId, tag) {
     const routing = await loadRouting(indexRoot);
     const symbol = routing.symbols[symbolId];
-    if (symbol && symbol.tagsSemantic) {
+    if (symbol && symbol.tags) {
         const normalizedTag = tag.toLowerCase().trim();
-        const index = symbol.tagsSemantic.indexOf(normalizedTag);
+        const index = symbol.tags.indexOf(normalizedTag);
         if (index !== -1) {
-            symbol.tagsSemantic.splice(index, 1);
-            // Update tag index
-            if (routing.tagIndex[normalizedTag]) {
-                routing.tagIndex[normalizedTag].count = Math.max(0, routing.tagIndex[normalizedTag].count - 1);
-                // Optional: remove tag from index if count is 0? Maybe keep it for history/search score.
+            symbol.tags.splice(index, 1);
+            // Update categorized tag index
+            const tagType = findTagType(routing.tagIndex, normalizedTag);
+            if (tagType) {
+                routing.tagIndex[tagType][normalizedTag].count = Math.max(0, routing.tagIndex[tagType][normalizedTag].count - 1);
             }
             await saveRouting(indexRoot, routing);
         }
@@ -208,6 +284,7 @@ async function removeSymbolTag(indexRoot, symbolId, tag) {
 }
 /**
  * Batch update symbol tags (add and remove in one atomic operation)
+ * Uses unified tags array and categorized tagIndex
  */
 async function updateSymbolTags(indexRoot, symbolId, tagsToAdd, tagsToRemove) {
     const routing = await loadRouting(indexRoot);
@@ -215,8 +292,11 @@ async function updateSymbolTags(indexRoot, symbolId, tagsToAdd, tagsToRemove) {
     if (!symbol) {
         return;
     }
-    const tagIndex = routing.tagIndex || (routing.tagIndex = {});
-    const normalizeTagChange = (change, fallbackType) => {
+    // Initialize tags array if not present
+    if (!symbol.tags) {
+        symbol.tags = [];
+    }
+    const normalizeTagChange = (change, fallbackType = "semantic") => {
         const rawTag = typeof change === "string" ? change : change.tag;
         const tagType = typeof change === "string" ? fallbackType : change.tagType || fallbackType;
         const normalizedTag = rawTag?.toLowerCase().trim();
@@ -225,68 +305,35 @@ async function updateSymbolTags(indexRoot, symbolId, tagsToAdd, tagsToRemove) {
         }
         return { tag: normalizedTag, tagType };
     };
-    const getTagList = (tagType, create) => {
-        if (tagType === "semantic") {
-            if (!symbol.tagsSemantic && create) {
-                symbol.tagsSemantic = [];
-            }
-            return symbol.tagsSemantic;
-        }
-        if (tagType === "base") {
-            if (!symbol.tagsBase && create) {
-                symbol.tagsBase = [];
-            }
-            return symbol.tagsBase;
-        }
-        if (!symbol.tagsCustom && create) {
-            symbol.tagsCustom = [];
-        }
-        return symbol.tagsCustom;
-    };
-    const removeTag = (tag, tagType) => {
-        const types = tagType ? [tagType] : ["semantic", "base", "custom"];
-        for (const type of types) {
-            const list = getTagList(type, false);
-            if (!list) {
-                continue;
-            }
-            const index = list.indexOf(tag);
-            if (index === -1) {
-                continue;
-            }
-            list.splice(index, 1);
-            if (tagIndex[tag]) {
-                tagIndex[tag].count = Math.max(0, tagIndex[tag].count - 1);
-            }
-        }
-    };
-    const addTag = (tag, tagType) => {
-        const list = getTagList(tagType, true);
-        if (list.includes(tag)) {
-            return;
-        }
-        list.push(tag);
-        if (!tagIndex[tag]) {
-            tagIndex[tag] = { count: 0, score: 0 };
-        }
-        tagIndex[tag].count++;
-    };
     // Remove tags first
-    tagsToRemove.forEach((change) => {
+    for (const change of tagsToRemove) {
         const normalized = normalizeTagChange(change);
-        if (!normalized) {
-            return;
+        if (!normalized)
+            continue;
+        const { tag: tagToRemove } = normalized;
+        const idx = symbol.tags.indexOf(tagToRemove);
+        if (idx !== -1) {
+            symbol.tags.splice(idx, 1);
+            // Update index count
+            const existingType = findTagType(routing.tagIndex, tagToRemove);
+            if (existingType) {
+                routing.tagIndex[existingType][tagToRemove].count = Math.max(0, routing.tagIndex[existingType][tagToRemove].count - 1);
+            }
         }
-        removeTag(normalized.tag, normalized.tagType);
-    });
-    // Add new tags (legacy callers default to semantic)
-    tagsToAdd.forEach((change) => {
-        const normalized = normalizeTagChange(change, "semantic");
-        if (!normalized) {
-            return;
+    }
+    // Add new tags
+    for (const change of tagsToAdd) {
+        const normalized = normalizeTagChange(change);
+        if (!normalized)
+            continue;
+        const { tag: tagToAdd, tagType } = normalized;
+        if (!symbol.tags.includes(tagToAdd)) {
+            symbol.tags.push(tagToAdd);
+            // Update categorized index
+            const entry = getTagEntry(routing.tagIndex, tagToAdd, tagType);
+            entry.count++;
         }
-        addTag(normalized.tag, normalized.tagType || "semantic");
-    });
+    }
     await saveRouting(indexRoot, routing);
 }
 async function saveRouting(indexRoot, routing) {

@@ -5,17 +5,29 @@ import { constants as fsConstants } from "fs";
 import * as core from "semantic-route-assistant-core";
 import { createHash } from "crypto";
 
+/**
+ * RoutingJson type definition.
+ * Note: This should match core/src/routingStore.ts RoutingJson type.
+ * After rebuilding core (`cd core && npm run build`), this can be replaced with:
+ *   import type { RoutingJson, CategorizedTagIndex } from "semantic-route-assistant-core";
+ */
+type TagIndexEntry = {
+  count: number;
+  score: number;
+};
+
+type CategorizedTagIndex = {
+  base: Record<string, TagIndexEntry>;
+  semantic: Record<string, TagIndexEntry>;
+  custom: Record<string, TagIndexEntry>;
+};
+
 type RoutingJson = {
   schemaVersion?: number;
   modules: {
     [moduleName: string]: string;
   };
-  tagIndex?: {
-    [tag: string]: {
-      count: number;
-      score: number;
-    };
-  };
+  tagIndex: CategorizedTagIndex;
   symbols: {
     [symbolId: string]: {
       module: string;
@@ -23,10 +35,13 @@ type RoutingJson = {
       declLine?: number;
       implLine?: number;
       filePath?: string;
+      signature?: string;
+      brief?: string;
+      tags?: string[];
+      // Legacy fields (for migration display)
       tagsBase?: string[];
       tagsSemantic?: string[];
       tagsCustom?: string[];
-      tags?: string[];
     };
   };
 };
@@ -46,12 +61,12 @@ type TagGraphItem = {
   signature: string;
   brief: string;
   tags: string[];
-  filePath?: string;
-  line?: number;
-  module?: string;
   tagsBase?: string[];
   tagsSemantic?: string[];
   tagsCustom?: string[];
+  filePath?: string;
+  line?: number;
+  module?: string;
 };
 
 type TagGraphNode = {
@@ -116,126 +131,6 @@ function normalizeFilePath(filePath: string): string {
   return filePath.replace(/\\/g, "/").replace(/^\.\//, "");
 }
 
-async function hasModuleIndex(indexRoot: string): Promise<boolean> {
-  const modulesDir = path.join(indexRoot, "modules");
-  try {
-    const entries = await readdir(modulesDir, { withFileTypes: true });
-    return entries.some((entry) => entry.isFile() && entry.name.endsWith(".md"));
-  } catch {
-    return false;
-  }
-}
-
-function parseModuleEntries(content: string): Map<string, { signature: string; brief: string }> {
-  const entries = new Map<string, { signature: string; brief: string }>();
-  const lines = content.split("\n");
-  const entryRegex =
-    /^\s*-\s+`([^`]+)`\s*<!--\s*id:\s*([^|]+)\s*\|\s*hash:\s*([^\s|]+)(?:\s*\|\s*impl:\s*([^\s|]+))?(?:\s*\|\s*file:\s*([^|]+))?(?:\s*\|\s*tags_base:\s*\[([^\]]*)\])?(?:\s*\|\s*tags_sem:\s*\[([^\]]*)\])?(?:\s*\|\s*tags:\s*\[([^\]]*)\])?\s*-->/;
-
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
-    const match = line.match(entryRegex);
-    if (!match) {
-      continue;
-    }
-
-    const signature = match[1].trim();
-    const id = match[2].trim();
-
-    let brief = "";
-    let j = i + 1;
-    while (j < lines.length && !lines[j].startsWith("## ") && !entryRegex.test(lines[j])) {
-      if (lines[j].trim()) {
-        brief = lines[j].trim();
-      }
-      j += 1;
-    }
-
-    entries.set(id, { signature, brief });
-    i = j - 1;
-  }
-
-  return entries;
-}
-
-async function snapshotModuleFiles(modulesDir: string): Promise<Map<string, string>> {
-  const snapshot = new Map<string, string>();
-  try {
-    await access(modulesDir, fsConstants.F_OK);
-  } catch {
-    return snapshot;
-  }
-
-  const uris = await vscode.workspace.findFiles(new vscode.RelativePattern(modulesDir, "**/*.md"));
-  for (const uri of uris) {
-    try {
-      const buffer = await readFile(uri.fsPath);
-      const hash = createHash("sha1").update(buffer).digest("hex");
-      snapshot.set(uri.fsPath, hash);
-    } catch {
-      // ignore read errors
-    }
-  }
-
-  return snapshot;
-}
-
-function diffModuleSnapshots(before: Map<string, string>, after: Map<string, string>): {
-  created: string[];
-  updated: string[];
-} {
-  const created: string[] = [];
-  const updated: string[] = [];
-
-  for (const [filePath, hash] of after.entries()) {
-    const prevHash = before.get(filePath);
-    if (!prevHash) {
-      created.push(filePath);
-    } else if (prevHash !== hash) {
-      updated.push(filePath);
-    }
-  }
-
-  created.sort();
-  updated.sort();
-  return { created, updated };
-}
-
-function reportModuleChanges(
-  actionLabel: string,
-  projectRoot: string,
-  created: string[],
-  updated: string[]
-): void {
-  OUTPUT_CHANNEL.appendLine(
-    `[V3] ${actionLabel}完成：新增 ${created.length}，更新 ${updated.length}`
-  );
-
-  if (created.length > 0) {
-    OUTPUT_CHANNEL.appendLine("新增:");
-    for (const filePath of created) {
-      const rel = path.relative(projectRoot, filePath) || filePath;
-      OUTPUT_CHANNEL.appendLine(`  - ${rel}`);
-    }
-  }
-
-  if (updated.length > 0) {
-    OUTPUT_CHANNEL.appendLine("更新:");
-    for (const filePath of updated) {
-      const rel = path.relative(projectRoot, filePath) || filePath;
-      OUTPUT_CHANNEL.appendLine(`  - ${rel}`);
-    }
-  }
-
-  if (created.length === 0 && updated.length === 0) {
-    OUTPUT_CHANNEL.appendLine("[V3] 未发现模块文件变更。");
-  }
-
-  OUTPUT_CHANNEL.appendLine("");
-  if (created.length > 0 || updated.length > 0) {
-    OUTPUT_CHANNEL.show(true);
-  }
-}
 
 async function loadRouting(indexRoot: string): Promise<RoutingJson | null> {
   const loadFromCore = (core as any).loadRouting as
@@ -265,18 +160,13 @@ async function searchSkillsV2(indexRoot: string, query: string): Promise<V2Searc
     return [];
   }
 
+  // Build entry map directly from routing.symbols (no longer reads module files)
   const entryMap = new Map<string, { signature: string; brief: string }>();
-  for (const modulePath of Object.values(routing.modules)) {
-    const resolvedPath = path.join(indexRoot, modulePath);
-    try {
-      const content = await readFile(resolvedPath, "utf8");
-      const parsed = parseModuleEntries(content);
-      for (const [id, entry] of parsed.entries()) {
-        entryMap.set(id, entry);
-      }
-    } catch {
-      // ignore missing module files
-    }
+  for (const [symbolId, info] of Object.entries(routing.symbols)) {
+    entryMap.set(symbolId, {
+      signature: (info as any).signature || symbolId,
+      brief: (info as any).brief || ""
+    });
   }
 
   const tokens = query
@@ -452,28 +342,60 @@ async function buildTagGraphData(indexRoot: string): Promise<TagGraphNode[]> {
   if (!routing) {
     return [];
   }
+
   const entryMap = await buildEntryMapForRouting(indexRoot, routing);
   const tagMap = new Map<string, { tagType: "base" | "semantic" | "custom"; items: TagGraphItem[] }>();
-  const tagPriority: Record<TagGraphNode["tagType"], number> = {
+  const normalizeTags = (tags?: string[]) =>
+    (tags || []).map((tag) => tag.toLowerCase().trim()).filter(Boolean);
+
+  // Helper to find tag type from categorized tagIndex
+  const findTagType = (tag: string): "base" | "semantic" | "custom" => {
+    const tagIndex = routing.tagIndex;
+    if (tagIndex?.base?.[tag]) return "base";
+    if (tagIndex?.semantic?.[tag]) return "semantic";
+    if (tagIndex?.custom?.[tag]) return "custom";
+    // Default to semantic if not found
+    return "semantic";
+  };
+
+  const tagPriority: Record<"base" | "semantic" | "custom", number> = {
     semantic: 3,
     base: 2,
     custom: 1
   };
 
   for (const [symbolId, info] of Object.entries(routing.symbols)) {
-    const semanticTags = (info.tagsSemantic || []).map((tag) => tag.toLowerCase());
-    const baseTags = (info.tagsBase || info.tags || []).map((tag) => tag.toLowerCase());
-    const customTags = (info.tagsCustom || []).map((tag) => tag.toLowerCase());
-    const allTags = Array.from(new Set([...semanticTags, ...baseTags, ...customTags].filter(Boolean)));
-    const tags =
-      semanticTags.length > 0
-        ? semanticTags
-        : baseTags.length > 0
-        ? baseTags
-        : customTags;
-    if (tags.length === 0) {
+    const baseTagsRaw = normalizeTags(info.tagsBase);
+    const semanticTagsRaw = normalizeTags(info.tagsSemantic);
+    const customTagsRaw = normalizeTags(info.tagsCustom);
+    const unifiedTagsRaw = normalizeTags(info.tags);
+    const allTags =
+      unifiedTagsRaw.length > 0
+        ? unifiedTagsRaw
+        : [...baseTagsRaw, ...semanticTagsRaw, ...customTagsRaw];
+
+    if (allTags.length === 0) {
       continue;
     }
+
+    const baseTags = new Set(baseTagsRaw);
+    const semanticTags = new Set(semanticTagsRaw);
+    const customTags = new Set(customTagsRaw);
+    for (const tag of allTags) {
+      if (baseTags.has(tag) || semanticTags.has(tag) || customTags.has(tag)) {
+        continue;
+      }
+      const tagType = findTagType(tag);
+      if (tagType === "base") {
+        baseTags.add(tag);
+      } else if (tagType === "custom") {
+        customTags.add(tag);
+      } else {
+        semanticTags.add(tag);
+      }
+    }
+
+    const uniqueTags = [...new Set(allTags)];
 
     const entry = entryMap.get(symbolId);
     const signature = entry?.signature ?? symbolId;
@@ -483,19 +405,20 @@ async function buildTagGraphData(indexRoot: string): Promise<TagGraphNode[]> {
       id: symbolId,
       signature,
       brief,
-      tags: allTags,
+      tags: uniqueTags,
+      tagsBase: baseTags.size ? Array.from(baseTags) : undefined,
+      tagsSemantic: semanticTags.size ? Array.from(semanticTags) : undefined,
+      tagsCustom: customTags.size ? Array.from(customTags) : undefined,
       filePath: info.filePath,
       line,
-      module: info.module,
-      tagsBase: baseTags,
-      tagsSemantic: semanticTags,
-      tagsCustom: customTags
+      module: info.module
     };
 
-    const ensureTag = (tag: string, tagType: "base" | "semantic" | "custom") => {
+    const ensureTag = (tag: string) => {
       if (!tag) {
         return;
       }
+      const tagType = findTagType(tag);
       const existing = tagMap.get(tag);
       if (!existing) {
         tagMap.set(tag, { tagType, items: [item] });
@@ -507,14 +430,8 @@ async function buildTagGraphData(indexRoot: string): Promise<TagGraphNode[]> {
       existing.items.push(item);
     };
 
-    for (const tag of semanticTags) {
-      ensureTag(tag, "semantic");
-    }
-    for (const tag of baseTags) {
-      ensureTag(tag, "base");
-    }
-    for (const tag of customTags) {
-      ensureTag(tag, "custom");
+    for (const tag of uniqueTags) {
+      ensureTag(tag);
     }
   }
 
@@ -2487,6 +2404,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const projectRoot = folders[0].uri.fsPath;
     const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
     const briefConcurrency = config.get<number>("llm.briefConcurrency", 4);
+    const writeSkillsFiles = config.get<boolean>("skills.writeOnBuild", true);
     const buildV3 = (core as any).buildModuleIndexV3 as
       | ((
         projectRoot: string,
@@ -2495,6 +2413,7 @@ export function activate(context: vscode.ExtensionContext): void {
           onProgress?: (info: { current: number; total: number; filePath?: string }) => void;
           onBriefProgress?: (info: { current: number; total: number }) => void;
           briefConcurrency?: number;
+          writeSkillsFiles?: boolean;
         }
       ) => Promise<void>)
       | undefined;
@@ -2505,12 +2424,6 @@ export function activate(context: vscode.ExtensionContext): void {
     }
 
     const outDir = path.join(projectRoot, ".ai_context");
-    const modulesDir = path.join(outDir, "modules");
-    const hasIndex = await hasModuleIndex(outDir);
-    if (!hasIndex) {
-      vscode.window.showInformationMessage("Semantic Route: 索引为空，改为执行构建。");
-    }
-    const beforeSnapshot = await snapshotModuleFiles(modulesDir);
 
     await vscode.window.withProgress(
       {
@@ -2522,14 +2435,10 @@ export function activate(context: vscode.ExtensionContext): void {
         progress.report({ message: "准备环境..." });
         await applyLlmEnv(context);
 
-        progress.report({ message: "准备环境..." });
-        await applyLlmEnv(context);
-
-        // Configure skills generation (Removed)
-
-        progress.report({ message: "正在生成模块索引..." });
+        progress.report({ message: "正在扫描文件..." });
         await buildV3(projectRoot, outDir, {
           briefConcurrency,
+          writeSkillsFiles,
           onProgress: (info: { current: number; total: number; filePath?: string }) => {
             const relativePath = info.filePath
               ? path.relative(projectRoot, info.filePath)
@@ -2545,16 +2454,10 @@ export function activate(context: vscode.ExtensionContext): void {
             });
           }
         });
-        progress.report({ message: "正在聚类模块..." });
       }
     );
 
-    const afterSnapshot = await snapshotModuleFiles(modulesDir);
-    const { created, updated } = diffModuleSnapshots(beforeSnapshot, afterSnapshot);
-    reportModuleChanges("构建", projectRoot, created, updated);
-    vscode.window.showInformationMessage(
-      `Semantic Route: 索引构建完成。新增 ${created.length}，更新 ${updated.length}。`
-    );
+    vscode.window.showInformationMessage("Semantic Route: 索引构建完成。");
   });
 
   const updateCmd = vscode.commands.registerCommand("semanticRoute.updateIndex", async () => {
@@ -2586,8 +2489,6 @@ export function activate(context: vscode.ExtensionContext): void {
     }
 
     const outDir = path.join(projectRoot, ".ai_context");
-    const modulesDir = path.join(outDir, "modules");
-    const beforeSnapshot = await snapshotModuleFiles(modulesDir);
 
     await vscode.window.withProgress(
       {
@@ -2599,12 +2500,7 @@ export function activate(context: vscode.ExtensionContext): void {
         progress.report({ message: "准备环境..." });
         await applyLlmEnv(context);
 
-        progress.report({ message: "准备环境..." });
-        await applyLlmEnv(context);
-
-        // Configure skills generation (Removed)
-
-        progress.report({ message: "正在生成模块索引..." });
+        progress.report({ message: "正在扫描文件..." });
         await updateV3(projectRoot, outDir, {
           briefConcurrency,
           onProgress: (info: { current: number; total: number; filePath?: string }) => {
@@ -2622,16 +2518,10 @@ export function activate(context: vscode.ExtensionContext): void {
             });
           }
         });
-        progress.report({ message: "正在聚类模块..." });
       }
     );
 
-    const afterSnapshot = await snapshotModuleFiles(modulesDir);
-    const { created, updated } = diffModuleSnapshots(beforeSnapshot, afterSnapshot);
-    reportModuleChanges("更新", projectRoot, created, updated);
-    vscode.window.showInformationMessage(
-      `Semantic Route: 索引更新完成。新增 ${created.length}，更新 ${updated.length}。`
-    );
+    vscode.window.showInformationMessage("Semantic Route: 索引更新完成。");
   });
 
   const searchCmd = vscode.commands.registerCommand("semanticRoute.searchSkills", async () => {

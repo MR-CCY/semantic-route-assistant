@@ -3,8 +3,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.groupSymbolsToModulesWithLLM = void 0;
 exports.inferPathModuleHint = inferPathModuleHint;
-exports.groupSymbolsToModulesWithLLM = groupSymbolsToModulesWithLLM;
+exports.groupSymbolsByTagsOrPath = groupSymbolsByTagsOrPath;
 const path_1 = __importDefault(require("path"));
 const DEFAULT_MAX_SYMBOLS = 300;
 const MIN_CLUSTER_SIZE = 3;
@@ -137,8 +138,12 @@ function groupByTags(symbols) {
     }
     return clusters;
 }
-async function groupSymbolsToModulesWithLLM(symbols, opts) {
-    const maxSymbols = opts?.maxSymbolsForLLM ?? DEFAULT_MAX_SYMBOLS;
+/**
+ * Group symbols into clusters by tags or path.
+ * Uses tag frequency to determine primary grouping, falls back to path-based grouping.
+ */
+async function groupSymbolsByTagsOrPath(symbols, opts) {
+    const maxSymbols = opts?.maxSymbolsPerCluster ?? opts?.maxSymbolsForLLM ?? DEFAULT_MAX_SYMBOLS;
     if (symbols.length === 0) {
         return [];
     }
@@ -147,3 +152,5 @@ async function groupSymbolsToModulesWithLLM(symbols, opts) {
     }
     return groupByTags(symbols);
 }
+/** @deprecated Use groupSymbolsByTagsOrPath instead */
+exports.groupSymbolsToModulesWithLLM = groupSymbolsByTagsOrPath;
