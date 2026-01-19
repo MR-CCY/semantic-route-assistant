@@ -69,6 +69,7 @@ async function loadIgnorePatterns(projectRoot: string): Promise<ReturnType<typeo
       throw error;
     }
   }
+  ig.add(["node_modules/", "**/node_modules/**"]);
   return ig;
 }
 
@@ -169,7 +170,40 @@ function parseModuleEntries(content: string): Map<string, ExistingEntry> {
   return entries;
 }
 
+function buildExistingEntriesFromRouting(
+  existingRouting: RoutingJson
+): Map<string, ExistingEntry> {
+  const entries = new Map<string, ExistingEntry>();
+
+  for (const [id, info] of Object.entries(existingRouting.symbols || {})) {
+    const baseTags = (info.tagsBase || []).map(normalizeTag).filter(Boolean);
+    const semanticSource =
+      info.tagsSemantic && info.tagsSemantic.length > 0 ? info.tagsSemantic : info.tags || [];
+    const semanticTags = semanticSource.map(normalizeTag).filter(Boolean);
+
+    entries.set(id, {
+      signature: info.signature ?? "",
+      declHash: info.declHash,
+      brief: info.brief ?? "",
+      baseTags,
+      semanticTags,
+      filePath: info.filePath
+    });
+  }
+
+  return entries;
+}
+
 async function loadExistingEntries(indexRoot: string): Promise<Map<string, ExistingEntry>> {
+  try {
+    const routing = await loadRouting(indexRoot);
+    if (Object.keys(routing.symbols || {}).length > 0) {
+      return buildExistingEntriesFromRouting(routing);
+    }
+  } catch {
+    // fall through to legacy module parsing
+  }
+
   const modulesDir = path.join(indexRoot, "modules");
   const entryMap = new Map<string, ExistingEntry>();
   let moduleFiles: string[] = [];
@@ -403,6 +437,7 @@ async function collectSymbolsForV3(
 
   const existingEntries = reuseExisting ? await loadExistingEntries(outDir) : new Map();
   const previousMeta = reuseExisting ? await loadMeta(outDir) : {};
+  const fileChangedMap = new Map<string, boolean>();
   const totalFiles = files.length;
   let currentFile = 0;
 
@@ -415,6 +450,10 @@ async function collectSymbolsForV3(
 
     const code = await readFile(absolutePath, "utf8");
     fileHashes[relativePath] = hashContent(code);
+    if (reuseExisting) {
+      const previousHash = previousMeta[relativePath]?.hash;
+      fileChangedMap.set(relativePath, previousHash !== fileHashes[relativePath]);
+    }
     options?.onProgress?.({ current: currentFile, total: totalFiles, filePath: relativePath });
 
     const extracted = adapter.extractSymbolsFromCode(code, relativePath);
@@ -467,11 +506,14 @@ async function collectSymbolsForV3(
 
   for (const candidate of candidates.values()) {
     const existing = existingEntries.get(candidate.symbolId);
+    const fileChanged = reuseExisting
+      ? fileChangedMap.get(candidate.filePath) ?? true
+      : true;
     const canReuse =
       reuseExisting &&
       existing &&
       existing.declHash === candidate.declHash &&
-      existing.implHash === candidate.implHash;
+      (!fileChanged || (existing.implHash && existing.implHash === candidate.implHash));
 
     if (canReuse) {
       const baseTags = existing.baseTags.length > 0 ? existing.baseTags : candidate.baseTags;

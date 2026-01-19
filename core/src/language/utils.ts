@@ -16,6 +16,7 @@ async function loadIgnore(projectRoot: string): Promise<ReturnType<typeof ignore
             throw error;
         }
     }
+    ig.add(["node_modules/", "**/node_modules/**"]);
 
     return ig;
 }

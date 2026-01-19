@@ -65,6 +65,7 @@ async function loadIgnorePatterns(projectRoot) {
             throw error;
         }
     }
+    ig.add(["node_modules/", "**/node_modules/**"]);
     return ig;
 }
 /**
@@ -143,7 +144,33 @@ function parseModuleEntries(content) {
     }
     return entries;
 }
+function buildExistingEntriesFromRouting(existingRouting) {
+    const entries = new Map();
+    for (const [id, info] of Object.entries(existingRouting.symbols || {})) {
+        const baseTags = (info.tagsBase || []).map(normalizeTag).filter(Boolean);
+        const semanticSource = info.tagsSemantic && info.tagsSemantic.length > 0 ? info.tagsSemantic : info.tags || [];
+        const semanticTags = semanticSource.map(normalizeTag).filter(Boolean);
+        entries.set(id, {
+            signature: info.signature ?? "",
+            declHash: info.declHash,
+            brief: info.brief ?? "",
+            baseTags,
+            semanticTags,
+            filePath: info.filePath
+        });
+    }
+    return entries;
+}
 async function loadExistingEntries(indexRoot) {
+    try {
+        const routing = await (0, routingStore_1.loadRouting)(indexRoot);
+        if (Object.keys(routing.symbols || {}).length > 0) {
+            return buildExistingEntriesFromRouting(routing);
+        }
+    }
+    catch {
+        // fall through to legacy module parsing
+    }
     const modulesDir = path_1.default.join(indexRoot, "modules");
     const entryMap = new Map();
     let moduleFiles = [];
@@ -293,6 +320,7 @@ async function collectSymbolsForV3(projectRoot, outDir, reuseExisting, defaultAd
     const candidates = new Map();
     const existingEntries = reuseExisting ? await loadExistingEntries(outDir) : new Map();
     const previousMeta = reuseExisting ? await (0, metaStore_1.loadMeta)(outDir) : {};
+    const fileChangedMap = new Map();
     const totalFiles = files.length;
     let currentFile = 0;
     for (const absolutePath of files) {
@@ -302,6 +330,10 @@ async function collectSymbolsForV3(projectRoot, outDir, reuseExisting, defaultAd
         const adapter = (0, language_1.getAdapterForFile)(absolutePath) || defaultAdapter;
         const code = await (0, promises_1.readFile)(absolutePath, "utf8");
         fileHashes[relativePath] = hashContent(code);
+        if (reuseExisting) {
+            const previousHash = previousMeta[relativePath]?.hash;
+            fileChangedMap.set(relativePath, previousHash !== fileHashes[relativePath]);
+        }
         options?.onProgress?.({ current: currentFile, total: totalFiles, filePath: relativePath });
         const extracted = adapter.extractSymbolsFromCode(code, relativePath);
         for (const symbol of extracted) {
@@ -350,10 +382,13 @@ async function collectSymbolsForV3(projectRoot, outDir, reuseExisting, defaultAd
     }
     for (const candidate of candidates.values()) {
         const existing = existingEntries.get(candidate.symbolId);
+        const fileChanged = reuseExisting
+            ? fileChangedMap.get(candidate.filePath) ?? true
+            : true;
         const canReuse = reuseExisting &&
             existing &&
             existing.declHash === candidate.declHash &&
-            existing.implHash === candidate.implHash;
+            (!fileChanged || (existing.implHash && existing.implHash === candidate.implHash));
         if (canReuse) {
             const baseTags = existing.baseTags.length > 0 ? existing.baseTags : candidate.baseTags;
             const semanticTags = existing.semanticTags.length > 0 ? existing.semanticTags : [];
