@@ -1,0 +1,13 @@
+.vscode/**
+.vscode-test/**
+src/**
+.gitignore
+tsconfig.json
+esbuild.js
+**/*.map
+**/*.ts
+out/**
+.DS_Store
+
+# Ensure native builds are included
+!**/*.node

@@ -1,2 +1,13 @@
 core/node_modules
 vscode-extension/node_modules
+.DS_Store
+.ai_context/
+*.vsix
+*.tgz
+core/dist/**/*.d.ts
+vscode-extension/dist/
+.DS_Store
+core/.DS_Store
+vscode-extension/.DS_Store
+.DS_Store
+core/.DS_Store

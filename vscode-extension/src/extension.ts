@@ -90,6 +90,8 @@ const CONFIG_SECTION = "semanticRoute";
 const SECRET_KEY = "semanticRoute.llm.apiKey";
 const PROFILE_SECRET_PREFIX = "semanticRoute.llm.apiKey.profile.";
 const OUTPUT_CHANNEL = vscode.window.createOutputChannel("Semantic Route");
+const SKILLS_VERSION_KEY = "semanticRoute.skillsVersion";
+const SKILLS_ENABLED_KEY = "semanticRoute.skillsEnabled";
 
 const PROVIDERS = ["openai", "qwen", "gemini", "other", "disable"] as const;
 const PROFILE_PROVIDERS = ["openai", "qwen", "gemini", "other"] as const;
@@ -2384,6 +2386,7 @@ async function configureLlm(context: vscode.ExtensionContext): Promise<void> {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  void ensureSkillsOnActivate(context);
   const tagGraphProvider = new TagGraphViewProvider(context);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("semanticRoute.tagGraph", tagGraphProvider)
@@ -2392,6 +2395,54 @@ export function activate(context: vscode.ExtensionContext): void {
   const configureCmd = vscode.commands.registerCommand("semanticRoute.configureLLM", async () => {
     await configureLlm(context);
   });
+
+  const toggleSkillsCmd = vscode.commands.registerCommand(
+    "semanticRoute.toggleSkills",
+    async () => {
+      const enabled = await resolveSkillsEnabled(context);
+      const nextEnabled = !enabled;
+
+      await context.globalState.update(SKILLS_ENABLED_KEY, nextEnabled);
+
+      const generateSkillsFiles = (core as any).generateSkillsFiles as
+        | ((
+          outDir: string,
+          symbols: unknown[],
+          projectName?: string,
+          options?: { force?: boolean }
+        ) => Promise<void>)
+        | undefined;
+      const removeSkillsFiles = (core as any).removeSkillsFiles as
+        | (() => Promise<void>)
+        | undefined;
+
+      try {
+        if (nextEnabled) {
+          if (generateSkillsFiles) {
+            await generateSkillsFiles("", [], "Project", { force: true });
+          }
+          await context.globalState.update(
+            SKILLS_VERSION_KEY,
+            context.extension?.packageJSON?.version ?? "0.0.0"
+          );
+          vscode.window.showInformationMessage(
+            "Semantic Route: Skills 已启用，已写入 SKILL.md 与脚本。"
+          );
+        } else {
+          if (removeSkillsFiles) {
+            await removeSkillsFiles();
+          }
+          await context.globalState.update(SKILLS_VERSION_KEY, undefined);
+          vscode.window.showInformationMessage(
+            "Semantic Route: Skills 已关闭，已删除 SKILL.md 与脚本。"
+          );
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage(`Semantic Route: 切换 Skills 失败：${message}`);
+      }
+    }
+  );
 
   const buildCmd = vscode.commands.registerCommand("semanticRoute.buildIndex", async () => {
     const folders = vscode.workspace.workspaceFolders;
@@ -2404,7 +2455,6 @@ export function activate(context: vscode.ExtensionContext): void {
     const projectRoot = folders[0].uri.fsPath;
     const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
     const briefConcurrency = config.get<number>("llm.briefConcurrency", 4);
-    const writeSkillsFiles = config.get<boolean>("skills.writeOnBuild", true);
     const buildV3 = (core as any).buildModuleIndexV3 as
       | ((
         projectRoot: string,
@@ -2438,7 +2488,7 @@ export function activate(context: vscode.ExtensionContext): void {
         progress.report({ message: "正在扫描文件..." });
         await buildV3(projectRoot, outDir, {
           briefConcurrency,
-          writeSkillsFiles,
+          writeSkillsFiles: false,
           onProgress: (info: { current: number; total: number; filePath?: string }) => {
             const relativePath = info.filePath
               ? path.relative(projectRoot, info.filePath)
@@ -2864,9 +2914,76 @@ export function activate(context: vscode.ExtensionContext): void {
     searchCmd,
     autoSkillsDocCmd,
     autoSkillsClipboardCmd,
+    toggleSkillsCmd,
     revealSymbolCmd,
     openTagGraphCmd
   );
+}
+
+async function ensureSkillsOnActivate(context: vscode.ExtensionContext): Promise<void> {
+  const enabled = await resolveSkillsEnabled(context);
+  if (!enabled) {
+    const removeSkillsFiles = (core as any).removeSkillsFiles as
+      | (() => Promise<void>)
+      | undefined;
+    if (removeSkillsFiles) {
+      try {
+        await removeSkillsFiles();
+      } catch (error) {
+        console.warn("Semantic Route: Failed to remove skills files.", error);
+      }
+    }
+    await context.globalState.update(SKILLS_VERSION_KEY, undefined);
+    return;
+  }
+
+  const extensionVersion = context.extension?.packageJSON?.version ?? "0.0.0";
+  const storedVersion = context.globalState.get<string>(SKILLS_VERSION_KEY);
+  if (storedVersion === extensionVersion) {
+    return;
+  }
+
+  const generateSkillsFiles = (core as any).generateSkillsFiles as
+    | ((
+      outDir: string,
+      symbols: unknown[],
+      projectName?: string,
+      options?: { force?: boolean }
+    ) => Promise<void>)
+    | undefined;
+
+  if (!generateSkillsFiles) {
+    return;
+  }
+
+  try {
+    await generateSkillsFiles("", [], "Project", { force: true });
+    await context.globalState.update(SKILLS_VERSION_KEY, extensionVersion);
+  } catch (error) {
+    console.warn("Semantic Route: Failed to update skills files on activation.", error);
+  }
+}
+
+async function resolveSkillsEnabled(context: vscode.ExtensionContext): Promise<boolean> {
+  const stored = context.globalState.get<boolean>(SKILLS_ENABLED_KEY);
+  if (stored !== undefined) {
+    return stored;
+  }
+
+  const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
+  const legacyWriteOnBuild = config.get<boolean>("skills.writeOnBuild");
+  const legacyEnabled = config.get<boolean>("skills.enabled");
+  const resolved = legacyWriteOnBuild ?? legacyEnabled ?? true;
+
+  await context.globalState.update(SKILLS_ENABLED_KEY, resolved);
+  if (legacyWriteOnBuild !== undefined) {
+    await config.update("skills.writeOnBuild", undefined, vscode.ConfigurationTarget.Global);
+  }
+  if (legacyEnabled !== undefined) {
+    await config.update("skills.enabled", undefined, vscode.ConfigurationTarget.Global);
+  }
+
+  return resolved;
 }
 
 export function deactivate(): void {

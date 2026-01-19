@@ -1,5 +1,5 @@
 import path from "path";
-import { mkdir, stat, writeFile } from "fs/promises";
+import { mkdir, stat, writeFile, rm } from "fs/promises";
 import type { SymbolRecord } from "./v3Types";
 
 /**
@@ -8,7 +8,19 @@ import type { SymbolRecord } from "./v3Types";
  * This Skill enforces a "reuse-first" policy:
  * AI must search for existing capabilities before implementing new code.
  */
+function getSkillRootExampleLine(): string {
+  const isWindows = process.platform === "win32";
+  const codexRoot = isWindows
+    ? `%USERPROFILE%\\.codex\\skills\\find-existing-code`
+    : `~/.codex/skills/find-existing-code`;
+  const claudeRoot = isWindows
+    ? `%USERPROFILE%\\.claude\\skills\\find-existing-code`
+    : `~/.claude/skills/find-existing-code`;
+  return `当前平台示例（Codex）：\`${codexRoot}\`；Claude：\`${claudeRoot}\``;
+}
+
 export function generateClaudeSkillMd(): string {
+  const skillRootExampleLine = getSkillRootExampleLine();
   return `---
 name: find-existing-code
 description: 复用优先：新写/重构前先查能力；查找具备某些能力的函数/类也用此技能
@@ -29,7 +41,8 @@ description: 复用优先：新写/重构前先查能力；查找具备某些能
 3) 有匹配 → 阅读最小实现片段 → 复用或申请重写
 4) 无匹配 → 直接实现
 
-脚本路径：\`scripts/search.py\`
+脚本路径：\`<SKILL_ROOT>/scripts/search.py\`
+${skillRootExampleLine}
 
 ---
 
@@ -38,11 +51,11 @@ description: 复用优先：新写/重构前先查能力；查找具备某些能
 ### Rule 1: 查询优先
 写代码前必须执行查询：
 \`\`\`bash
-python scripts/search.py <indexRoot> <tag1> <tag2>
+python3 <SKILL_ROOT>/scripts/search.py <indexRoot> <tag1> <tag2>
 \`\`\`
 OR 模式（广泛搜索）：
 \`\`\`bash
-python scripts/search.py -o <indexRoot> <tag1> <tag2>
+python3 <SKILL_ROOT>/scripts/search.py -o <indexRoot> <tag1> <tag2>
 \`\`\`
 
 ### Rule 2: 阅读验证
@@ -71,7 +84,7 @@ python scripts/search.py -o <indexRoot> <tag1> <tag2>
 
 \`\`\`
 [REFACTOR] 修改 RoutingJson
-[QUERY] python scripts/search.py <indexRoot> routing tagIndex
+[QUERY] python3 <SKILL_ROOT>/scripts/search.py <indexRoot> routing tagIndex
 [IMPACT] 列出受影响符号（最多 5 个）
 [ACTION] 依次更新所有受影响的函数
 \`\`\`
@@ -91,7 +104,7 @@ python scripts/search.py -o <indexRoot> <tag1> <tag2>
 ## 行为示例（最小）
 
 \`\`\`
-[QUERY] python scripts/search.py <indexRoot> http get
+[QUERY] python3 <SKILL_ROOT>/scripts/search.py <indexRoot> http get
 [FOUND] net::ApiClient::get - 发送 HTTP GET 请求
 [REVIEW] 阅读 src/net/api_client.cpp:42，确认支持 URL 参数
 [ACTION] 直接调用 net::ApiClient::get(url)
@@ -314,8 +327,12 @@ fi
 export async function generateSkillsFiles(
   outDir: string,
   symbols: SymbolRecord[],
-  projectName: string = "Project"
+  projectName: string = "Project",
+  options?: {
+    force?: boolean;
+  }
 ): Promise<void> {
+  const forceWrite = options?.force ?? false;
 
   // Generate SKILL.md and scripts for Claude and Codex (global skills directory)
   const homeDir = process.env.HOME || process.env.USERPROFILE || "";
@@ -334,24 +351,44 @@ export async function generateSkillsFiles(
     for (const skillDir of skillsDirs) {
       const skillPath = path.join(skillDir, "SKILL.md");
       const scriptsDir = path.join(skillDir, "scripts");
+      let shouldWrite = forceWrite;
 
-      try {
-        // Check if file already exists
-        await stat(skillPath);
-        // File exists, skip
-      } catch {
-        // File doesn't exist, create it
-        await mkdir(skillDir, { recursive: true });
-        await writeFile(skillPath, skillContent, "utf8");
-
-        // Deploy scripts
-        await mkdir(scriptsDir, { recursive: true });
-        await writeFile(path.join(scriptsDir, "search.py"), pyScript, "utf8");
-        await writeFile(path.join(scriptsDir, "search.sh"), shScript, "utf8");
-
-        // Also write copy to local scripts dir for reference/dev
-        // (Optional, but good for consistency)
+      if (!shouldWrite) {
+        try {
+          await stat(skillPath);
+        } catch {
+          shouldWrite = true;
+        }
       }
+
+      if (!shouldWrite) {
+        continue;
+      }
+
+      await mkdir(skillDir, { recursive: true });
+      await writeFile(skillPath, skillContent, "utf8");
+
+      // Deploy scripts
+      await mkdir(scriptsDir, { recursive: true });
+      await writeFile(path.join(scriptsDir, "search.py"), pyScript, "utf8");
+      await writeFile(path.join(scriptsDir, "search.sh"), shScript, "utf8");
     }
+  }
+}
+
+export async function removeSkillsFiles(): Promise<void> {
+  const homeDir = process.env.HOME || process.env.USERPROFILE || "";
+  if (!homeDir) {
+    return;
+  }
+
+  const skillName = "find-existing-code";
+  const skillsDirs = [
+    path.join(homeDir, ".claude", "skills", skillName),
+    path.join(homeDir, ".codex", "skills", skillName)
+  ];
+
+  for (const skillDir of skillsDirs) {
+    await rm(skillDir, { recursive: true, force: true });
   }
 }

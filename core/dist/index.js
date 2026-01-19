@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.updateSymbolTags = exports.removeSymbolTag = exports.addSymbolTag = exports.updateSymbolDescription = exports.incrementTagScore = exports.saveRouting = exports.loadRouting = exports.ROUTING_SCHEMA_VERSION = exports.searchSkills = exports.summarizeFile = exports.updateModuleIndexV3 = exports.buildModuleIndexV3 = exports.updateIndexV2 = exports.buildIndexV2 = void 0;
+exports.updateSymbolTags = exports.removeSymbolTag = exports.addSymbolTag = exports.updateSymbolDescription = exports.incrementTagScore = exports.saveRouting = exports.loadRouting = exports.ROUTING_SCHEMA_VERSION = exports.searchSkills = exports.summarizeFile = exports.removeSkillsFiles = exports.generateSkillsFiles = exports.updateModuleIndexV3 = exports.buildModuleIndexV3 = exports.updateIndexV2 = exports.buildIndexV2 = void 0;
 exports.buildIndex = buildIndex;
 exports.updateIndex = updateIndex;
 const path_1 = __importDefault(require("path"));
@@ -23,6 +23,9 @@ Object.defineProperty(exports, "updateIndexV2", { enumerable: true, get: functio
 var indexV3_1 = require("./indexV3");
 Object.defineProperty(exports, "buildModuleIndexV3", { enumerable: true, get: function () { return indexV3_1.buildModuleIndexV3; } });
 Object.defineProperty(exports, "updateModuleIndexV3", { enumerable: true, get: function () { return indexV3_1.updateModuleIndexV3; } });
+var skillsGenerator_1 = require("./skillsGenerator");
+Object.defineProperty(exports, "generateSkillsFiles", { enumerable: true, get: function () { return skillsGenerator_1.generateSkillsFiles; } });
+Object.defineProperty(exports, "removeSkillsFiles", { enumerable: true, get: function () { return skillsGenerator_1.removeSkillsFiles; } });
 // Skills generation config (Removed)
 // export { setSkillsConfig, getSkillsConfig, DEFAULT_WHITELIST_TAGS } from "./skillsGenerator";
 // export type { SkillsConfig } from "./skillsGenerator";

@@ -13,7 +13,7 @@ export type ExtractedSymbol = {
 };
 
 const parser = new Parser();
-parser.setLanguage(Cpp);
+parser.setLanguage(Cpp as any);
 
 function getText(code: string, node: Parser.SyntaxNode): string {
   return code.slice(node.startIndex, node.endIndex);

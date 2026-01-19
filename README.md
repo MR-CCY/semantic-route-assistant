@@ -22,6 +22,19 @@ Semantic Routing Code Assistant 是一个面向 AI 编程时代的工程语义�
 
 ---
 
+## 🧭 使用步骤
+
+1. 安装扩展并打开项目工作区
+2. 运行 `Semantic Route: Build Index` 生成 `.ai_context/`
+3. 运行 `Semantic Route: Tag Graph` 查看/筛选/编辑标签
+4. 日常修改后运行 `Semantic Route: Update Index` 做增量更新
+5. 可选操作：
+   - `Semantic Route: Configure LLM` 配置 LLM 提供商
+   - `Semantic Route: Toggle Skills` 启用/关闭 Skills（会创建/删除 `SKILL.md` 和脚本）
+   - `Semantic Route: 在图谱中显示当前符号` 快速定位当前光标处符号
+
+---
+
 ## 📂 目录结构
 
 ```
@@ -77,6 +90,7 @@ semantic-route-assistant/
 | `Semantic Route: Configure LLM` | 配置 LLM 提供商 |
 | `Semantic Route: Auto Skills (Doc/Clipboard)` | 自动生成当前上下文的技能文档 |
 | `Semantic Route: Search Skill Blocks` | 搜索并生成 Skill 文档片段 |
+| `Semantic Route: Toggle Skills` | 启用/关闭 Skills（创建/删除 Skill 文件） |
 
 ---
 
@@ -85,16 +99,16 @@ semantic-route-assistant/
 本插件不再生成静态的 Markdown 文档，而是采用 **Global Skills** 模式，将查找能力直接注入到 AI Agent (Claude/Cursor/Copilot) 中。
 
 ### 自动安装的 Skill
-构建索引后（`semanticRoute.skills.writeOnBuild` 为 true），会自动在 `~/.claude/skills/find-existing-code/` (或其他 Agent 目录) 安装以下工具：
+开启 `Semantic Route: Toggle Skills` 后，会自动在 `~/.claude/skills/find-existing-code/` 与 `~/.codex/skills/find-existing-code/` 写入 `SKILL.md` 与脚本（版本更新时会自动覆盖更新）。
 
 1.  **Tag Search (`search.py` / `search.sh`)**:
     *   **AND 模式**: 查找同时包含 `http` 和 `async` 的代码
         ```bash
-        scripts/search.py /path/to/.ai_context http async
+        python3 <SKILL_ROOT>/scripts/search.py /path/to/.ai_context http async
         ```
     *   **OR 模式**: 查找 `websocket` 或 `grpc` 相关代码
         ```bash
-        scripts/search.py -o /path/to/.ai_context websocket grpc
+        python3 <SKILL_ROOT>/scripts/search.py -o /path/to/.ai_context websocket grpc
         ```
 
 2.  **Usage Tracking**:
@@ -161,7 +175,7 @@ semantic-route-assistant/
 - `semanticRoute.llm.enabled`: 启用/禁用 LLM
 - `semanticRoute.llm.briefConcurrency`: 生成 brief 的并发数量
 - `semanticRoute.skills.autoTopN`: Auto Skills 自动选取数量
-- `semanticRoute.skills.writeOnBuild`: Build Index 时生成并写入 Skills（默认开启）
+- Skills 开关不在设置中，通过 `Semantic Route: Toggle Skills` 控制
 
 ---
 
