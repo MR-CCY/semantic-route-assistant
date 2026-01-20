@@ -4,12 +4,26 @@ import { createHash } from "crypto";
 import fg from "fast-glob";
 import ignore from "ignore";
 import { generateBriefAndTagsForSymbol } from "./llm/generateBriefForSymbol";
-import { buildRoutingFromModules, loadRouting, saveRouting, RoutingJson } from "./routingStore";
+import {
+  buildRoutingFromModules,
+  createEmptyTagMetadata,
+  loadRouting,
+  saveRouting,
+  RoutingJson
+} from "./routingStore";
+import type { TagMetadata } from "./routingStore";
 import { loadMeta, saveMeta, Meta } from "./metaStore";
 import { hashSignature, normalizeSignature } from "./signatureUtils";
 import { Cluster, SymbolRecord } from "./v3Types";
 import { groupSymbolsToModulesWithLLM } from "./moduleGrouper";
 import { filterSemanticTags } from "./tagUtils";
+import {
+  aggregateAllUnknownTags,
+  ensureCategoriesForTags,
+  findUnknownTags,
+  updateCategoryCounts
+} from "./tagAggregator";
+import { applyAliasMapping, localNormalize, removeAliasCycles } from "./tagNormalizer";
 import { getLanguageAdapter, getAdapterForFile, getSupportedExtensions, LanguageAdapter } from "./language";
 import { generateSkillsFiles } from "./skillsGenerator";
 
@@ -58,7 +72,10 @@ function buildMeta(fileHashes: Record<string, string>): Meta {
 /**
  * Load .gitignore patterns from project root.
  */
-async function loadIgnorePatterns(projectRoot: string): Promise<ReturnType<typeof ignore>> {
+async function loadIgnorePatterns(
+  projectRoot: string,
+  extraPatterns?: string[]
+): Promise<ReturnType<typeof ignore>> {
   const ig = ignore();
   const gitignorePath = path.join(projectRoot, ".gitignore");
   try {
@@ -70,16 +87,22 @@ async function loadIgnorePatterns(projectRoot: string): Promise<ReturnType<typeo
     }
   }
   ig.add(["node_modules/", "**/node_modules/**"]);
+  if (extraPatterns && extraPatterns.length > 0) {
+    ig.add(extraPatterns.filter((pattern) => pattern && pattern.trim()));
+  }
   return ig;
 }
 
 /**
  * Scan source files for all supported languages.
  */
-async function scanAllLanguageFiles(projectRoot: string): Promise<string[]> {
+async function scanAllLanguageFiles(
+  projectRoot: string,
+  extraIgnorePatterns?: string[]
+): Promise<string[]> {
   const extensions = getSupportedExtensions();
   const patterns = extensions.map((ext) => `**/*.${ext}`);
-  const ig = await loadIgnorePatterns(projectRoot);
+  const ig = await loadIgnorePatterns(projectRoot, extraIgnorePatterns);
 
   const matches = await fg(patterns, {
     cwd: projectRoot,
@@ -184,6 +207,7 @@ function buildExistingEntriesFromRouting(
     entries.set(id, {
       signature: info.signature ?? "",
       declHash: info.declHash,
+      implHash: info.implHash,
       brief: info.brief ?? "",
       baseTags,
       semanticTags,
@@ -201,34 +225,10 @@ async function loadExistingEntries(indexRoot: string): Promise<Map<string, Exist
       return buildExistingEntriesFromRouting(routing);
     }
   } catch {
-    // fall through to legacy module parsing
+    // fall through
   }
 
-  const modulesDir = path.join(indexRoot, "modules");
-  const entryMap = new Map<string, ExistingEntry>();
-  let moduleFiles: string[] = [];
-  try {
-    moduleFiles = await fg("**/*.md", { cwd: modulesDir, onlyFiles: true });
-  } catch {
-    return entryMap;
-  }
-
-  for (const relPath of moduleFiles) {
-    const filePath = path.join(modulesDir, relPath);
-    try {
-      const content = await readFile(filePath, "utf8");
-      const entries = parseModuleEntries(content);
-      for (const [id, entry] of entries.entries()) {
-        if (!entryMap.has(id)) {
-          entryMap.set(id, entry);
-        }
-      }
-    } catch {
-      // ignore unreadable files
-    }
-  }
-
-  return entryMap;
+  return new Map();
 }
 
 function getChangedFiles(previousMeta: Meta, fileHashes: Record<string, string>): Set<string> {
@@ -253,6 +253,101 @@ function getChangedFiles(previousMeta: Meta, fileHashes: Record<string, string>)
 
 function normalizeTag(tag: string): string {
   return tag.toLowerCase().trim();
+}
+
+function normalizeTagsWithLocalRules(tags: string[]): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+
+  for (const tag of tags) {
+    const cleaned = localNormalize(tag);
+    if (!cleaned || seen.has(cleaned)) {
+      continue;
+    }
+    seen.add(cleaned);
+    normalized.push(cleaned);
+  }
+
+  return normalized;
+}
+
+function applyAliasesToTags(tags: string[], aliases: Record<string, string>): string[] {
+  const seen = new Set<string>();
+  const canonical: string[] = [];
+
+  for (const tag of tags) {
+    if (!tag) {
+      continue;
+    }
+    const resolved = applyAliasMapping(tag, aliases);
+    if (!resolved || seen.has(resolved)) {
+      continue;
+    }
+    seen.add(resolved);
+    canonical.push(resolved);
+  }
+
+  return canonical;
+}
+
+async function normalizeAndAggregateTags(
+  symbols: SymbolRecord[],
+  existingMetadata?: TagMetadata,
+  onAggregationProgress?: (info: { current: number; total: number }) => void
+): Promise<TagMetadata> {
+  let metadata = existingMetadata ?? createEmptyTagMetadata();
+  const normalizedTags: string[] = [];
+  let rawBaseCount = 0;
+  let rawSemanticCount = 0;
+  const normalizedSemanticTags: string[] = [];
+  let normalizedSemanticCount = 0;
+
+  console.log(`[tagAggregation] 开始获取原语义标签 symbols=${symbols.length}`);
+  for (const symbol of symbols) {
+    rawBaseCount += (symbol.baseTags || []).length;
+    rawSemanticCount += (symbol.semanticTags || []).length;
+    symbol.baseTags = normalizeTagsWithLocalRules(symbol.baseTags || []);
+    symbol.semanticTags = normalizeTagsWithLocalRules(symbol.semanticTags || []);
+    normalizedSemanticCount += symbol.semanticTags.length;
+    normalizedSemanticTags.push(...symbol.semanticTags);
+    normalizedTags.push(...symbol.baseTags, ...symbol.semanticTags);
+  }
+  const uniqueNormalizedCount = new Set(normalizedTags).size;
+  const uniqueSemanticCount = new Set(normalizedSemanticTags).size;
+  console.log(
+    `[tagAggregation] 获取完原语义标签 rawBase=${rawBaseCount} rawSemantic=${rawSemanticCount} normalizedSemantic=${normalizedSemanticCount} semanticUnique=${uniqueSemanticCount} normalizedTotal=${normalizedTags.length} normalizedUnique=${uniqueNormalizedCount}`
+  );
+
+  const unknownTags = findUnknownTags(
+    normalizedSemanticTags,
+    metadata.aliases,
+    metadata.categories
+  );
+
+  if (unknownTags.length > 0) {
+    metadata = await aggregateAllUnknownTags(unknownTags, metadata, onAggregationProgress);
+  }
+
+  const cleanedAliases = removeAliasCycles(metadata.aliases);
+  if (Object.keys(cleanedAliases).length !== Object.keys(metadata.aliases).length) {
+    metadata = {
+      ...metadata,
+      aliases: cleanedAliases
+    };
+  }
+
+  const canonicalTags: string[] = [];
+  const canonicalSemanticTags: string[] = [];
+  for (const symbol of symbols) {
+    symbol.semanticTags = applyAliasesToTags(symbol.semanticTags || [], metadata.aliases);
+    canonicalTags.push(...symbol.baseTags, ...symbol.semanticTags);
+    canonicalSemanticTags.push(...symbol.semanticTags);
+  }
+
+  metadata = ensureCategoriesForTags(metadata, canonicalTags);
+  metadata = updateCategoryCounts(metadata, canonicalSemanticTags);
+
+  return metadata;
 }
 
 function collectExistingCustomTags(existingRouting: RoutingJson): Map<string, string[]> {
@@ -321,14 +416,16 @@ export async function buildModuleIndexV3(
   options?: {
     onProgress?: (info: { current: number; total: number; filePath?: string }) => void;
     onBriefProgress?: (info: { current: number; total: number }) => void;
+    onAggregationProgress?: (info: { current: number; total: number }) => void;
     languageId?: string;
     briefConcurrency?: number;
     writeSkillsFiles?: boolean;
+    ignorePatterns?: string[];
   }
 ): Promise<void> {
   const existingRouting = await loadRouting(outDir).catch(() => ({
-    modules: {},
     tagIndex: { base: {}, semantic: {}, custom: {} },
+    tagMetadata: createEmptyTagMetadata(),
     symbols: {}
   }));
 
@@ -349,7 +446,14 @@ export async function buildModuleIndexV3(
     const writeSkillsFiles = options?.writeSkillsFiles ?? true;
 
     await resolveBriefsForV3(projectRoot, adapter, briefTasks, symbols, options);
-    await writeV3Outputs(stagingDir, symbols, fileHashes, existingRouting, writeSkillsFiles);
+    await writeV3Outputs(
+      stagingDir,
+      symbols,
+      fileHashes,
+      existingRouting,
+      writeSkillsFiles,
+      { onAggregationProgress: options?.onAggregationProgress }
+    );
 
     await rm(backupDir, { recursive: true, force: true });
     try {
@@ -388,6 +492,7 @@ async function collectSymbolsForV3(
   defaultAdapter: LanguageAdapter,
   options?: {
     onProgress?: (info: { current: number; total: number; filePath?: string }) => void;
+    ignorePatterns?: string[];
   }
 ): Promise<{
   fileHashes: Record<string, string>;
@@ -404,7 +509,7 @@ async function collectSymbolsForV3(
   }>;
 }> {
   // Scan all supported language files
-  const files = await scanAllLanguageFiles(projectRoot);
+  const files = await scanAllLanguageFiles(projectRoot, options?.ignorePatterns);
   const fileHashes: Record<string, string> = {};
   const symbols: SymbolRecord[] = [];
   const briefTasks: Array<{
@@ -456,7 +561,15 @@ async function collectSymbolsForV3(
     }
     options?.onProgress?.({ current: currentFile, total: totalFiles, filePath: relativePath });
 
-    const extracted = adapter.extractSymbolsFromCode(code, relativePath);
+    // 特殊处理：C++ 文件使用 WASM 异步版本
+    let extracted;
+    if (adapter.id === "cpp") {
+      const { extractSymbolsFromCodeAsync } = await import("./symbolExtractor");
+      extracted = await extractSymbolsFromCodeAsync(code, relativePath);
+    } else {
+      extracted = adapter.extractSymbolsFromCode(code, relativePath);
+    }
+
     for (const symbol of extracted) {
       const normalizedSignature = normalizeSignature(symbol.signature);
       const declHash = hashSignature(normalizedSignature);
@@ -571,6 +684,9 @@ async function resolveBriefsForV3(
   const concurrency = Math.max(1, Math.floor(options?.briefConcurrency ?? BRIEF_CONCURRENCY));
   let briefDone = 0;
   const briefTotal = briefTasks.length;
+  if (briefTotal > 0) {
+    console.log(`[briefGeneration] start total=${briefTotal} concurrency=${concurrency}`);
+  }
   const briefResults = await runWithConcurrency(briefTasks, concurrency, async (task) => {
     const impl = await adapter.extractImplementationForSymbol({
       projectRoot,
@@ -605,7 +721,11 @@ async function resolveBriefsForV3(
     };
     briefDone += 1;
     if (briefDone % 10 === 0 || briefDone === briefTotal) {
-      options?.onBriefProgress?.({ current: briefDone, total: briefTotal });
+      if (options?.onBriefProgress) {
+        options.onBriefProgress({ current: briefDone, total: briefTotal });
+      } else {
+        console.log(`[briefGeneration] progress ${briefDone}/${briefTotal}`);
+      }
     }
     return result;
   });
@@ -618,15 +738,23 @@ async function writeV3Outputs(
   symbols: SymbolRecord[],
   fileHashes: Record<string, string>,
   existingRouting?: RoutingJson,
-  writeSkillsFiles?: boolean
+  writeSkillsFiles?: boolean,
+  options?: {
+    onAggregationProgress?: (info: { current: number; total: number }) => void;
+  }
 ): Promise<void> {
-  const groups = await groupSymbolsToModulesWithLLM(symbols, { maxSymbolsForLLM: 300 });
-
   const resolvedExistingRouting = existingRouting ?? await loadRouting(outDir).catch(() => ({
-    modules: {},
     tagIndex: { base: {}, semantic: {}, custom: {} },
+    tagMetadata: createEmptyTagMetadata(),
     symbols: {}
   }));
+  const tagMetadata = await normalizeAndAggregateTags(
+    symbols,
+    resolvedExistingRouting.tagMetadata,
+    options?.onAggregationProgress
+  );
+
+  const groups = await groupSymbolsToModulesWithLLM(symbols, { maxSymbolsForLLM: 300 });
   const customTagsBySymbol = collectExistingCustomTags(resolvedExistingRouting);
 
   const routingModules: Record<
@@ -634,6 +762,7 @@ async function writeV3Outputs(
     Array<{
       id: string;
       declHash: string;
+      implHash?: string;
       declLine?: number;
       implLine?: number;
       filePath?: string;
@@ -656,6 +785,7 @@ async function writeV3Outputs(
       return {
         id: symbol.symbolId,
         declHash: symbol.declHash,
+        implHash: symbol.implHash,
         declLine: symbol.declLine,
         implLine: symbol.implLine,
         filePath: symbol.filePath,
@@ -669,7 +799,11 @@ async function writeV3Outputs(
   }
 
   // Preserve tag scores while rebuilding
-  const routing = buildRoutingFromModules(routingModules, resolvedExistingRouting.tagIndex);
+  const routing = buildRoutingFromModules(
+    routingModules,
+    resolvedExistingRouting.tagIndex,
+    tagMetadata
+  );
   await saveRouting(outDir, routing);
 
   const meta = buildMeta(fileHashes);
@@ -687,14 +821,16 @@ export async function updateModuleIndexV3(
   options?: {
     onProgress?: (info: { current: number; total: number; filePath?: string }) => void;
     onBriefProgress?: (info: { current: number; total: number }) => void;
+    onAggregationProgress?: (info: { current: number; total: number }) => void;
     languageId?: string;
     briefConcurrency?: number;
+    ignorePatterns?: string[];
   }
 ): Promise<void> {
   const adapter = getLanguageAdapter(options?.languageId);
   const existingRouting = await loadRouting(outDir).catch(() => ({
-    modules: {},
     tagIndex: { base: {}, semantic: {}, custom: {} },
+    tagMetadata: createEmptyTagMetadata(),
     symbols: {}
   }));
   const previousMeta = await loadMeta(outDir);
@@ -712,5 +848,12 @@ export async function updateModuleIndexV3(
   }
 
   await resolveBriefsForV3(projectRoot, adapter, briefTasks, symbols, options);
-  await writeV3Outputs(outDir, symbols, fileHashes, existingRouting, false);
+  await writeV3Outputs(
+    outDir,
+    symbols,
+    fileHashes,
+    existingRouting,
+    false,
+    { onAggregationProgress: options?.onAggregationProgress }
+  );
 }

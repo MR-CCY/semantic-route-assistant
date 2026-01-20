@@ -11,8 +11,9 @@ export interface ImplementationResult {
   implementation: string | null;
 }
 
-const MAX_LINES = 80;
-const MAX_CHARS = 4000;
+const MAX_LINES = 200;
+const MAX_CHARS = 12000;
+const TRUNCATION_MARKER = "// ... truncated ...";
 
 function extractFunctionName(signature: string): string | null {
   const matches = signature.match(/([~A-Za-z_][\w:]*)\s*\(/g);
@@ -115,16 +116,79 @@ function findImplementationBlock(code: string, name: string): string | null {
   return null;
 }
 
+function sampleLines(lines: string[]): string {
+  const markerLines = 2;
+  const budget = Math.max(1, MAX_LINES - markerLines);
+  const headCount = Math.max(1, Math.floor(budget * 0.4));
+  const midCount = Math.max(1, Math.floor(budget * 0.2));
+  const tailCount = Math.max(1, budget - headCount - midCount);
+
+  const headEnd = headCount;
+  const tailStart = Math.max(headEnd + midCount, lines.length - tailCount);
+  let midStart = Math.floor((lines.length - midCount) / 2);
+  if (midStart < headEnd) {
+    midStart = headEnd;
+  }
+  if (midStart + midCount > tailStart) {
+    midStart = Math.max(headEnd, tailStart - midCount);
+  }
+
+  const head = lines.slice(0, headEnd);
+  const mid = lines.slice(midStart, midStart + midCount);
+  const tail = lines.slice(tailStart);
+
+  return [
+    ...head,
+    TRUNCATION_MARKER,
+    ...mid,
+    TRUNCATION_MARKER,
+    ...tail
+  ].join("\n");
+}
+
+function sampleChars(text: string): string {
+  const marker = `\n${TRUNCATION_MARKER}\n`;
+  const budget = Math.max(1, MAX_CHARS - marker.length * 2);
+  const headCount = Math.max(1, Math.floor(budget * 0.4));
+  const midCount = Math.max(1, Math.floor(budget * 0.2));
+  const tailCount = Math.max(1, budget - headCount - midCount);
+
+  let midStart = Math.floor((text.length - midCount) / 2);
+  if (midStart < headCount) {
+    midStart = headCount;
+  }
+  const tailStart = Math.max(midStart + midCount, text.length - tailCount);
+
+  const head = text.slice(0, headCount);
+  const mid = text.slice(midStart, midStart + midCount);
+  const tail = text.slice(tailStart);
+
+  return `${head}${marker}${mid}${marker}${tail}`;
+}
+
 function truncateImplementation(implementation: string): string {
+  if (!implementation) {
+    return implementation;
+  }
+
   const lines = implementation.split("\n");
-  let truncated = lines.slice(0, MAX_LINES).join("\n");
-  if (truncated.length > MAX_CHARS) {
-    truncated = truncated.slice(0, MAX_CHARS);
+  const withinLineLimit = lines.length <= MAX_LINES;
+  const withinCharLimit = implementation.length <= MAX_CHARS;
+
+  if (withinLineLimit && withinCharLimit) {
+    return implementation;
   }
-  if (truncated.length < implementation.length) {
-    truncated += "\n// truncated";
+
+  let sampled = implementation;
+  if (!withinLineLimit) {
+    sampled = sampleLines(lines);
   }
-  return truncated;
+
+  if (sampled.length > MAX_CHARS) {
+    sampled = sampleChars(sampled);
+  }
+
+  return sampled;
 }
 
 export function extractImplementationFromCode(

@@ -3,34 +3,52 @@ import { mkdir, stat, writeFile, rm } from "fs/promises";
 import type { SymbolRecord } from "./v3Types";
 
 /**
- * Generate .skills/find-existing-code/SKILL.md - Constraint-based AI Protocol
+ * Generate .skills/find-logic-implementation/SKILL.md - Semantic logic discovery protocol
  * 
- * This Skill enforces a "reuse-first" policy:
- * AI must search for existing capabilities before implementing new code.
+ * This Skill focuses on semantic discovery of algorithms/behaviors rather than text search.
  */
 function getSkillRootExampleLine(): string {
+  const skillName = SKILL_NAME;
   const isWindows = process.platform === "win32";
   const codexRoot = isWindows
-    ? `%USERPROFILE%\\.codex\\skills\\find-existing-code`
-    : `~/.codex/skills/find-existing-code`;
+    ? `%USERPROFILE%\\.codex\\skills\\${skillName}`
+    : `~/.codex/skills/${skillName}`;
   const claudeRoot = isWindows
-    ? `%USERPROFILE%\\.claude\\skills\\find-existing-code`
-    : `~/.claude/skills/find-existing-code`;
+    ? `%USERPROFILE%\\.claude\\skills\\${skillName}`
+    : `~/.claude/skills/${skillName}`;
   return `当前平台示例（Codex）：\`${codexRoot}\`；Claude：\`${claudeRoot}\``;
 }
+
+const SKILL_NAME = "find-logic-implementation";
+const LEGACY_SKILL_NAME = "find-existing-code";
 
 export function generateClaudeSkillMd(): string {
   const skillRootExampleLine = getSkillRootExampleLine();
   return `---
-name: find-existing-code
-description: 复用优先：新写/重构前先查能力；查找具备某些能力的函数/类也用此技能
+name: ${SKILL_NAME}
+description: 语义能力透视：查找功能/能力/行为/算法/模式的实现（函数名未知也可找，非普通文本搜索）
 ---
 
-# Semantic Routing Protocol (low-entropy)
+# Semantic Logic Discovery Protocol
 
 核心原则：
-1) 写新代码前 → 先查询能力表，优先复用
-2) 重构/修改前 → 先查询依赖，评估影响
+1) 语义发现优先（算法/行为/意图）
+2) 普通文本搜索走 rg/IDE
+3) 新增功能前 → 先用标签搜索已有能力
+4) 重构/修改前 → 先查询依赖，评估影响
+
+---
+
+## 适用范围（语义匹配）
+
+**必须使用**：语义/算法/行为/意图类检索（函数名看不出逻辑）。
+- 例：气泡排序、DAG 环检测、缓存失效策略、指纹生成、二分查找
+- 例：多条件组合（DAG + 锁 + 数据库写入）
+
+**禁止使用**：明确字面目标，直接搜代码更快更准。
+- 例：函数名/类名/文件名/路径/配置键/错误码/字符串字面量
+
+**路由规则**：能用 \`rg\`/IDE 搜索直接命中 → 不用此技能；否则用语义匹配。
 
 ---
 
@@ -48,23 +66,27 @@ ${skillRootExampleLine}
 
 ## 行为规则（简化）
 
-### Rule 1: 查询优先
-写代码前必须执行查询：
+### Rule 1: 语义转化（调用 search.py 前自动扩展）
+并非所有词都需要语义转化。明确实体/类名/模块名（如 dag、ApiClient）直接作为基础标签保留；只有能力/行为类意图（如 解析 JSON）才做语义转化与同义扩展。
+将用户意图转为技术语义标签（snake_case），并在调用 search.py 前自动扩展中英同义/翻译/格式变体（中英/蛇形/空格/连字符）；把同义项用 \`|\` 合成一组，python 仅负责检索不做扩展。
+例："气泡排序" → bubble_sort|bubble sort|sorting|气泡排序|排序算法
+例："dag 类的 json 解析" → dag + json_parse|json_decode|json_deserialize|解析json
+
+### Rule 2: 自动分组 + 并/交集
+脚本会输出语义分组：**组内 OR**（相似语义，用 \`|\`），**组间 AND**（不相似语义）。
+可用 !tag 或 -tag 作为排除组（组内仍可用 |）。
+短标签(<=3)仅全等匹配，避免噪声。
 \`\`\`bash
-python3 <SKILL_ROOT>/scripts/search.py <indexRoot> <tag1> <tag2>
-\`\`\`
-OR 模式（广泛搜索）：
-\`\`\`bash
-python3 <SKILL_ROOT>/scripts/search.py -o <indexRoot> <tag1> <tag2>
+python3 <SKILL_ROOT>/scripts/search.py <indexRoot> tagA|tagA_syn1|tagA_cn tagB|tagB_syn1|tagB_cn
 \`\`\`
 
-### Rule 2: 阅读验证
+### Rule 3: 阅读验证
 有匹配时只做三件事：
 1) **阅读最小实现**：跳转到 \`filePath:declLine\` 判断能力
 2) **确认满足**：能满足就复用，不要改
 3) **减少输入**：只汇报能力列表与结论，不贴源码
 
-### Rule 3: 重写审批
+### Rule 4: 重写审批
 如果匹配存在但需要重写，必须：
 1. **说明原因**：解释为什么现有实现不满足需求
 2. **请求审批**：等待用户确认后再重写
@@ -79,7 +101,7 @@ python3 <SKILL_ROOT>/scripts/search.py -o <indexRoot> <tag1> <tag2>
 
 **无匹配时**：直接实现新功能。
 
-### Rule 4: 重构影响分析
+### Rule 5: 重构影响分析
 重构/修改前只输出最小影响面（只回答：谁在调用该函数、谁在使用该类型、数据结构变更影响哪些模块）：
 
 \`\`\`
@@ -93,10 +115,10 @@ python3 <SKILL_ROOT>/scripts/search.py -o <indexRoot> <tag1> <tag2>
 
 ## 查询协议（短）
 
-### Step 1: 确定标签
+### Step 1: 确定标签（含同义/翻译/格式变体）
 \`\`\`
-"发送 HTTP 请求" → http request
-"修改路由结构" → routing tagIndex
+"气泡排序" → bubble_sort|sorting|气泡排序
+"DAG 环检测" → dag|directed_acyclic_graph cycle_detection|环检测
 \`\`\`
 
 ---
@@ -104,16 +126,18 @@ python3 <SKILL_ROOT>/scripts/search.py -o <indexRoot> <tag1> <tag2>
 ## 行为示例（最小）
 
 \`\`\`
-[QUERY] python3 <SKILL_ROOT>/scripts/search.py <indexRoot> http get
-[FOUND] net::ApiClient::get - 发送 HTTP GET 请求
-[REVIEW] 阅读 src/net/api_client.cpp:42，确认支持 URL 参数
-[ACTION] 直接调用 net::ApiClient::get(url)
+[QUERY] python3 <SKILL_ROOT>/scripts/search.py <indexRoot> bubble_sort|sorting|气泡排序
+[FOUND] utils::process_data - 实现排序逻辑
+[REVIEW] 阅读 src/utils/sort.cpp:42，确认包含气泡排序步骤
+[ACTION] 复用 utils::process_data
 \`\`\`
 
 ---
 
 ## 目标
 
+- **语义发现**: 定位算法/行为/意图实现
+- **交集检索**: 多条件组合更精准
 - **防重复**: 查到匹配时必须复用
 - **可重写**: 但需说明原因 + 审批
 - **安全重构**: 修改前分析影响范围
@@ -125,18 +149,159 @@ python3 <SKILL_ROOT>/scripts/search.py -o <indexRoot> <tag1> <tag2>
 function generateSearchPyScript(): string {
   return `#!/usr/bin/env python3
 """
-search.py - Search symbols by tags and increment tag scores
-Usage: 
-  python search.py <path-to-.ai_context> <tag1> [tag2 ...]     # AND mode (default)
-  python search.py -o <path-to-.ai_context> <tag1> [tag2 ...]  # OR mode
+search.py - Search symbols by semantic tag groups
+Usage:
+  python search.py <path-to-.ai_context> <tag1> [tag2 ...]     # OR within group, AND across groups
+  # Group synonyms with "|" (e.g. bubble_sort|sorting|气泡排序)
+  # Exclude group with "!" or "-" prefix (e.g. !mock|test)
+  # Short tags (<= 3 chars) require exact match
 """
 
 import json
 import sys
 from pathlib import Path
+import re
+
+SHORT_TAG_MAX_LEN = 3
 
 
-def search_symbols(context_dir: str, query_tags: list[str], use_or: bool = False):
+def normalize_tag(tag: str) -> str:
+    tag = tag.strip().lower()
+    tag = re.sub(r"[\\s\\-\\.]+", "_", tag)
+    tag = re.sub(r"_+", "_", tag).strip("_")
+    return tag
+
+
+def tag_matches(query_tag: str, symbol_tag: str) -> bool:
+    if not query_tag or not symbol_tag:
+        return False
+    if len(query_tag) <= SHORT_TAG_MAX_LEN or len(symbol_tag) <= SHORT_TAG_MAX_LEN:
+        return query_tag == symbol_tag
+    return query_tag in symbol_tag or symbol_tag in query_tag
+
+
+def merge_group_sets(groups: list[set[str]]) -> list[set[str]]:
+    merged: list[set[str]] = []
+    for group in groups:
+        if not group:
+            continue
+        placed = False
+        for existing in merged:
+            if existing & group:
+                existing.update(group)
+                placed = True
+                break
+        if not placed:
+            merged.append(set(group))
+
+    changed = True
+    while changed:
+        changed = False
+        result: list[set[str]] = []
+        for group in merged:
+            merged_into = False
+            for existing in result:
+                if existing & group:
+                    existing.update(group)
+                    merged_into = True
+                    changed = True
+                    break
+            if not merged_into:
+                result.append(set(group))
+        merged = result
+
+    return merged
+
+
+def parse_query_groups(query_tags: list[str]) -> tuple[list[list[str]], list[list[str]]]:
+    positive_groups: list[list[str]] = []
+    negative_groups: list[list[str]] = []
+    for raw in query_tags:
+        raw = raw.strip()
+        if not raw:
+            continue
+        is_negative = raw[0] in ("!", "-")
+        if is_negative:
+            raw = raw[1:]
+        parts = [part.strip() for part in raw.split("|") if part.strip()]
+        if parts:
+            if is_negative:
+                negative_groups.append(parts)
+            else:
+                positive_groups.append(parts)
+    return positive_groups, negative_groups
+
+
+def build_tag_score_map(tag_index: dict) -> dict[str, int]:
+    scores: dict[str, int] = {}
+    for category in ["base", "semantic", "custom"]:
+        for tag, info in (tag_index.get(category, {}) or {}).items():
+            scores[tag] = info.get("score", 0)
+    return scores
+
+
+def match_groups(groups: list[list[str]], all_tags: set[str]) -> tuple[list[bool], set[str]]:
+    group_matches: list[bool] = []
+    matched_tags: set[str] = set()
+    for group in groups:
+        group_hit = False
+        for symbol_tag in all_tags:
+            for query_tag in group:
+                if tag_matches(query_tag, symbol_tag):
+                    group_hit = True
+                    matched_tags.add(symbol_tag)
+                    break
+        group_matches.append(group_hit)
+    return group_matches, matched_tags
+
+
+def hits_any_group(groups: list[list[str]], all_tags: set[str]) -> bool:
+    for group in groups:
+        for symbol_tag in all_tags:
+            for query_tag in group:
+                if tag_matches(query_tag, symbol_tag):
+                    return True
+    return False
+
+
+def build_tag_groups(data: dict, query_groups: list[list[str]]) -> list[list[str]]:
+    tag_metadata = data.get("tagMetadata", {}) or {}
+    aliases = tag_metadata.get("aliases", {}) or {}
+    categories = tag_metadata.get("categories", {}) or {}
+    canonical_set = set(categories.keys()) | set(aliases.values())
+
+    reverse_aliases: dict[str, set[str]] = {}
+    for raw, canonical in aliases.items():
+        reverse_aliases.setdefault(canonical, set()).add(raw)
+
+    raw_groups: list[set[str]] = []
+    for group in query_groups:
+        group_set: set[str] = set()
+        for raw in group:
+            normalized = normalize_tag(raw)
+            if not normalized:
+                continue
+            group_set.add(normalized)
+            if normalized in aliases:
+                canonical = aliases[normalized]
+                group_set.add(canonical)
+                group_set.update(reverse_aliases.get(canonical, set()))
+            elif normalized in canonical_set:
+                group_set.add(normalized)
+                group_set.update(reverse_aliases.get(normalized, set()))
+        if group_set:
+            raw_groups.append(group_set)
+
+    merged_groups = merge_group_sets(raw_groups)
+    return [sorted(group) for group in merged_groups if group]
+
+
+def search_symbols(
+    context_dir: str,
+    positive_groups: list[list[str]],
+    negative_groups: list[list[str]],
+    flat_tags: list[str]
+):
     routing_path = Path(context_dir) / "routing.json"
     
     if not routing_path.exists():
@@ -146,8 +311,23 @@ def search_symbols(context_dir: str, query_tags: list[str], use_or: bool = False
     with open(routing_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
     
-    query_set = {tag.lower().strip() for tag in query_tags}
+    groups = build_tag_groups(data, positive_groups)
+    if not groups:
+        print("Error: At least one valid tag is required", file=sys.stderr)
+        sys.exit(1)
+    exclude_groups = build_tag_groups(data, negative_groups) if negative_groups else []
+
+    print("Semantic groups (OR within, AND across):")
+    for idx, group in enumerate(groups, 1):
+        print(f"  G{idx}: {', '.join(group)}")
+    if exclude_groups:
+        print("Exclude groups:")
+        for idx, group in enumerate(exclude_groups, 1):
+            print(f"  X{idx}: {', '.join(group)}")
+    print("---")
+
     results = []
+    tag_scores = build_tag_score_map(data.get('tagIndex', {}) or {})
     
     # Search symbols - use unified tags array
     for symbol_id, info in data.get('symbols', {}).items():
@@ -157,60 +337,48 @@ def search_symbols(context_dir: str, query_tags: list[str], use_or: bool = False
         )]
         all_tags = set(symbol_tags)
         
-        # Calculate matches
-        matched_tags = []
-        for query_tag in query_set:
-            for symbol_tag in all_tags:
-                if query_tag in symbol_tag or symbol_tag in query_tag:
-                    matched_tags.append(symbol_tag)
-                    break
-        
-        # Apply AND/OR logic
-        if use_or:
-            # OR: at least one tag matches
-            if matched_tags:
-                results.append({
-                    'symbol_id': symbol_id,
-                    'file_path': info.get('filePath', 'unknown'),
-                    'line': info.get('declLine', 0),
-                    'brief': info.get('brief', 'N/A'),
-                    'tags': symbol_tags,
-                    'match_count': len(matched_tags)
-                })
-        else:
-            # AND: all tags must match
-            if len(matched_tags) >= len(query_set):
-                results.append({
-                    'symbol_id': symbol_id,
-                    'file_path': info.get('filePath', 'unknown'),
-                    'line': info.get('declLine', 0),
-                    'brief': info.get('brief', 'N/A'),
-                    'tags': symbol_tags,
-                    'match_count': len(matched_tags)
-                })
+        group_matches, matched_tags = match_groups(groups, all_tags)
+        if not all(group_matches):
+            continue
+        if exclude_groups and hits_any_group(exclude_groups, all_tags):
+            continue
+
+        match_count = sum(1 for matched in group_matches if matched)
+        match_score = sum(tag_scores.get(tag, 0) for tag in matched_tags) + len(matched_tags)
+        results.append({
+            'symbol_id': symbol_id,
+            'file_path': info.get('filePath', 'unknown'),
+            'line': info.get('declLine', 0),
+            'brief': info.get('brief', 'N/A'),
+            'tags': symbol_tags,
+            'match_count': match_count,
+            'score': match_score
+        })
     
-    # Sort by match count (descending)
-    results.sort(key=lambda x: x['match_count'], reverse=True)
+    # Sort by score then match count (descending)
+    results.sort(key=lambda x: (x['score'], x['match_count']), reverse=True)
     
     # Display results
-    mode_str = "OR" if use_or else "AND"
-    print(f"Searching for tags ({mode_str}): {', '.join(query_tags)}")
+    if exclude_groups:
+        print(f"Searching for tag groups: {', '.join(flat_tags)} (excluding {len(exclude_groups)} group(s))")
+    else:
+        print(f"Searching for tag groups: {', '.join(flat_tags)}")
     print("---")
     for result in results:
         print(f"{result['file_path']}:{result['line']} - {result['symbol_id']}")
         print(f"  brief: {result['brief']}")
         print(f"  tags: {', '.join(result['tags'])}")
-        print(f"  matched: {result['match_count']} tag(s)")
+        print(f"  matched: {result['match_count']} tag(s), score: {result['score']}")
         print()
     
     print("---")
     print(f"Found {len(results)} symbol(s)")
     
     # Increment scores for all queried tags
-    for tag in query_tags:
+    for tag in flat_tags:
         increment_tag_score(context_dir, tag.lower().strip(), data)
     
-    print(f"Tag scores incremented for: {', '.join(query_tags)}")
+    print(f"Tag scores incremented for: {', '.join(flat_tags)}")
 
 
 def increment_tag_score(context_dir: str, tag: str, data: dict):
@@ -232,91 +400,51 @@ def increment_tag_score(context_dir: str, tag: str, data: dict):
 
 if __name__ == '__main__':
     if len(sys.argv) < 3:
-        print("Usage: python search.py [-o] <path-to-.ai_context> <tag1> [tag2 ...]", file=sys.stderr)
-        print("  -o: Use OR mode (default is AND)", file=sys.stderr)
+        print("Usage: python search.py <path-to-.ai_context> <tag1> [tag2 ...]", file=sys.stderr)
         sys.exit(1)
-    
-    use_or = sys.argv[1] == '-o'
-    start_idx = 2 if use_or else 1
-    
-    context_dir = sys.argv[start_idx]
-    query_tags = sys.argv[start_idx + 1:]
+
+    args = sys.argv[1:]
+
+    if len(args) < 2:
+        print("Error: At least one tag is required", file=sys.stderr)
+        sys.exit(1)
+
+    context_dir = args[0]
+    query_tags = args[1:]
     
     if not query_tags:
         print("Error: At least one tag is required", file=sys.stderr)
         sys.exit(1)
     
-    search_symbols(context_dir, query_tags, use_or)
+    positive_groups, negative_groups = parse_query_groups(query_tags)
+    if not positive_groups:
+        print("Error: At least one positive tag group is required", file=sys.stderr)
+        sys.exit(1)
+    flat_tags = [normalize_tag(tag) for group in positive_groups for tag in group if normalize_tag(tag)]
+    if not flat_tags:
+        print("Error: At least one valid tag is required", file=sys.stderr)
+        sys.exit(1)
+
+    search_symbols(context_dir, positive_groups, negative_groups, flat_tags)
 `;
 }
 
 function generateSearchShScript(): string {
   return `#!/bin/bash
-# search.sh - Search symbols by tag and increment tag score
-# Usage: search.sh <path-to-.ai_context> <tag>
+# search.sh - Search symbols by tag groups (delegates to search.py)
+# Usage: search.sh <path-to-.ai_context> <tag1> [tag2 ...]
 
 set -e
 
-CONTEXT_DIR="$1"
-QUERY_TAG="$2"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-if [ -z "$CONTEXT_DIR" ] || [ -z "$QUERY_TAG" ]; then
-  echo "Usage: search.sh <path-to-.ai_context> <tag>"
-  exit 1
+if command -v python3 >/dev/null 2>&1; then
+  python3 "$SCRIPT_DIR/search.py" "$@"
+  exit $?
 fi
 
-ROUTING_JSON="$CONTEXT_DIR/routing.json"
-
-if [ ! -f "$ROUTING_JSON" ]; then
-  echo "Error: routing.json not found at $ROUTING_JSON"
-  exit 1
-fi
-
-# Normalize query tag to lowercase
-QUERY_LOWER=$(echo "$QUERY_TAG" | tr '[:upper:]' '[:lower:]')
-
-# Search for symbols with matching tags
-echo "Searching for tag: $QUERY_TAG"
-echo "---"
-
-# Use jq if available, otherwise fallback to grep
-if command -v jq &> /dev/null; then
-  jq -r --arg tag "$QUERY_LOWER" '
-    .symbols | to_entries[] |
-    select(
-      (.value.tagsSemantic // [] | map(ascii_downcase) | any(. == $tag or contains($tag) or ($tag | contains(.)))) or
-      (.value.tagsBase // [] | map(ascii_downcase) | any(. == $tag or contains($tag) or ($tag | contains(.))))
-    ) |
-    "\(.value.filePath // "unknown"):\(.value.declLine // 0) - \(.key)\\n  brief: \(.value.brief // "N/A")\\n  tags: \((.value.tagsSemantic // []) + (.value.tagsBase // []) | join(", "))"
-  ' "$ROUTING_JSON"
-else
-  # Fallback: simple grep-based search
-  grep -i "\\"\\$QUERY_LOWER\\"" "$ROUTING_JSON" | head -20
-fi
-
-echo ""
-echo "---"
-echo "Tag search completed. Score incremented for: $QUERY_TAG"
-
-# Increment score using Node.js (if available)
-if command -v node &> /dev/null; then
-  node << 'EOF'
-    const fs = require('fs');
-    const contextDir = process.argv[1];
-    const tag = process.argv[2].toLowerCase().trim();
-    const routingPath = \`\${contextDir}/routing.json\`;
-    
-    try {
-      const data = JSON.parse(fs.readFileSync(routingPath, 'utf8'));
-      if (data.tagIndex && data.tagIndex[tag]) {
-        data.tagIndex[tag].score = (data.tagIndex[tag].score || 0) + 1;
-        fs.writeFileSync(routingPath, JSON.stringify(data, null, 2), 'utf8');
-      }
-    } catch (err) {
-      // Silent failure - tag scoring is non-critical
-    }
-EOF
-fi
+echo "Error: python3 is required to run semantic grouped search." >&2
+exit 1
 `;
 }
 
@@ -337,15 +465,14 @@ export async function generateSkillsFiles(
   // Generate SKILL.md and scripts for Claude and Codex (global skills directory)
   const homeDir = process.env.HOME || process.env.USERPROFILE || "";
   if (homeDir) {
-    const skillName = "find-existing-code";
     const skillContent = generateClaudeSkillMd();
     const pyScript = generateSearchPyScript();
     const shScript = generateSearchShScript();
 
     // Skills directories for different AI tools
     const skillsDirs = [
-      path.join(homeDir, ".claude", "skills", skillName),  // Claude
-      path.join(homeDir, ".codex", "skills", skillName)    // OpenAI Codex
+      path.join(homeDir, ".claude", "skills", SKILL_NAME),  // Claude
+      path.join(homeDir, ".codex", "skills", SKILL_NAME)    // OpenAI Codex
     ];
 
     for (const skillDir of skillsDirs) {
@@ -382,10 +509,11 @@ export async function removeSkillsFiles(): Promise<void> {
     return;
   }
 
-  const skillName = "find-existing-code";
   const skillsDirs = [
-    path.join(homeDir, ".claude", "skills", skillName),
-    path.join(homeDir, ".codex", "skills", skillName)
+    path.join(homeDir, ".claude", "skills", SKILL_NAME),
+    path.join(homeDir, ".codex", "skills", SKILL_NAME),
+    path.join(homeDir, ".claude", "skills", LEGACY_SKILL_NAME),
+    path.join(homeDir, ".codex", "skills", LEGACY_SKILL_NAME)
   ];
 
   for (const skillDir of skillsDirs) {

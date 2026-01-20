@@ -2,8 +2,9 @@
   "name": "semantic-route-assistant",
   "displayName": "Semantic Route Assistant",
   "description": "VS Code extension for building semantic route index stubs.",
-  "version": "0.0.2",
-  "publisher": "your-publisher",
+  "version": "2.0.0",
+  "publisher": "ccy",
+  "icon": "media/icon.png",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -56,10 +57,15 @@
     "configuration": {
       "title": "Semantic Route",
       "properties": {
-        "semanticRoute.llm.provider": {
-          "type": "string",
-          "default": "",
-          "description": "LLM 提供方（openai/qwen/gemini）。留空将禁用 LLM。"
+        "semanticRoute.llm.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用或禁用 LLM。"
+        },
+        "semanticRoute.llm.aggregationEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用语义标签聚合（LLM 归并未知语义标签以减少冗余）。关闭后仅本地清洗，不做聚合，未知标签保持独立。"
         },
         "semanticRoute.llm.activeProfile": {
           "type": "string",
@@ -90,22 +96,29 @@
               },
               "systemPrompt": {
                 "type": "string"
-              },
-              "userPrompt": {
-                "type": "string"
               }
             }
           }
         },
-        "semanticRoute.llm.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "启用或禁用 LLM。"
+        "semanticRoute.llm.provider": {
+          "type": "string",
+          "default": "",
+          "description": "LLM 提供方（openai/qwen/gemini）。留空将禁用 LLM。"
         },
         "semanticRoute.llm.model": {
           "type": "string",
           "default": "",
           "description": "LLM 模型名称。"
+        },
+        "semanticRoute.llm.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "可选的 API Base URL。"
+        },
+        "semanticRoute.llm.systemPrompt": {
+          "type": "string",
+          "default": "你是一个代码审查助手，支持多种语言。根据给定的函数签名和实现，生成 brief 与 tags。brief 为一句话功能描述（不超过 50 个字），准确、不幻想；tags 数量不限制，尽量覆盖算法/意图/技巧/副作用/特性/能力，标签可中英混合（中文或 snake_case 英文均可）。标签尽量使用名词或名词短语，动作用名词化表达。只基于签名/实现中的明确证据生成标签，避免抽象推断或臆测；无明确证据则不输出。避免只描述语言机制/控制流/通用实现细节（如异步/返回/异常捕获/解析等），优先领域或功能语义。只保留高信息量语义标签，避免文件路径/模块名/类名/函数名拆词，低质量通用词会在后处理过滤。",
+          "description": "用于生成 brief/语义标签的 System Prompt。留空则使用内置默认提示词。"
         },
         "semanticRoute.llm.briefConcurrency": {
           "type": "number",
@@ -117,20 +130,14 @@
           "default": 8,
           "description": "Auto Skills 自动选取的 Top N 数量。"
         },
-        "semanticRoute.llm.baseUrl": {
-          "type": "string",
-          "default": "",
-          "description": "可选的 API Base URL。"
-        },
-        "semanticRoute.llm.systemPrompt": {
-          "type": "string",
-          "default": "",
-          "description": "可选的 System Prompt。"
-        },
-        "semanticRoute.llm.userPrompt": {
-          "type": "string",
-          "default": "",
-          "description": "可选的 User Prompt 模板（支持占位符）。"
+        "semanticRoute.index.ignorePatterns": {
+          "type": "array",
+          "default": [],
+          "description": "忽略索引的文件/目录（支持 .gitignore 规则）。",
+          "scope": "resource",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },

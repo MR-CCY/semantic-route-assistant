@@ -10,7 +10,7 @@ export type TagType = "base" | "semantic" | "custom";
 
 export type TagChange = string | { tag: string; tagType?: TagType };
 
-export const ROUTING_SCHEMA_VERSION = 3;
+export const ROUTING_SCHEMA_VERSION = 4;
 
 /**
  * Categorized tag index - groups tags by type
@@ -21,16 +21,54 @@ export type CategorizedTagIndex = {
   custom: Record<string, TagIndexEntry>;
 };
 
+/**
+ * Category metadata for canonical tags
+ */
+export type TagCategory = {
+  count: number;
+};
+
+/**
+ * Tag metadata for alias mapping and category management
+ */
+export type TagMetadata = {
+  aliases: Record<string, string>;           // raw -> canonical
+  categories: Record<string, TagCategory>;   // canonical -> info
+  version: number;
+};
+
+export function createEmptyTagMetadata(): TagMetadata {
+  return {
+    aliases: {},
+    categories: {},
+    version: 1
+  };
+}
+
+function normalizeTagMetadata(tagMetadata?: TagMetadata): { normalized: TagMetadata; changed: boolean } {
+  const hasAliases = Boolean(tagMetadata && tagMetadata.aliases && typeof tagMetadata.aliases === "object");
+  const hasCategories = Boolean(tagMetadata && tagMetadata.categories && typeof tagMetadata.categories === "object");
+  const hasVersion = typeof tagMetadata?.version === "number";
+  const normalized: TagMetadata = {
+    aliases: tagMetadata?.aliases ?? {},
+    categories: tagMetadata?.categories ?? {},
+    version: hasVersion ? tagMetadata!.version : 1
+  };
+  return {
+    normalized,
+    changed: !tagMetadata || !hasAliases || !hasCategories || !hasVersion
+  };
+}
+
 export type RoutingJson = {
   schemaVersion?: number;
-  modules: {
-    [moduleName: string]: string;
-  };
   tagIndex: CategorizedTagIndex;
+  tagMetadata?: TagMetadata;
   symbols: {
     [symbolId: string]: {
       module: string;
       declHash: string;
+      implHash?: string;
       declLine?: number;
       implLine?: number;
       filePath?: string;
@@ -85,6 +123,7 @@ export function buildRoutingFromModules(
     Array<{
       id: string;
       declHash: string;
+      implHash?: string;
       declLine?: number;
       implLine?: number;
       filePath?: string;
@@ -95,17 +134,17 @@ export function buildRoutingFromModules(
       tagsCustom?: string[];
     }>
   >,
-  existingTagIndex?: CategorizedTagIndex
+  existingTagIndex?: CategorizedTagIndex,
+  existingTagMetadata?: TagMetadata
 ): RoutingJson {
   const routing: RoutingJson = {
     schemaVersion: ROUTING_SCHEMA_VERSION,
-    modules: {},
     tagIndex: createEmptyTagIndex(),
+    tagMetadata: existingTagMetadata ?? createEmptyTagMetadata(),
     symbols: {}
   };
 
   for (const [moduleName, entries] of Object.entries(moduleEntries)) {
-    routing.modules[moduleName] = `./modules/${moduleName}.md`;
     for (const entry of entries) {
       // Merge all tags into unified array
       const allTags = [
@@ -120,6 +159,7 @@ export function buildRoutingFromModules(
       routing.symbols[entry.id] = {
         module: moduleName,
         declHash: entry.declHash,
+        implHash: entry.implHash,
         declLine: entry.declLine,
         implLine: entry.implLine,
         filePath: entry.filePath,
@@ -245,6 +285,12 @@ function normalizeRouting(routing: RoutingJson): { routing: RoutingJson; migrate
     migrated = true;
   }
 
+  const normalizedMetadata = normalizeTagMetadata(routing.tagMetadata);
+  if (normalizedMetadata.changed) {
+    routing.tagMetadata = normalizedMetadata.normalized;
+    migrated = true;
+  }
+
   return { routing, migrated };
 }
 
@@ -262,8 +308,8 @@ export async function loadRouting(indexRoot: string): Promise<RoutingJson> {
     if (error?.code === "ENOENT") {
       return {
         schemaVersion: ROUTING_SCHEMA_VERSION,
-        modules: {},
         tagIndex: createEmptyTagIndex(),
+        tagMetadata: createEmptyTagMetadata(),
         symbols: {}
       };
     }

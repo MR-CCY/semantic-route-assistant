@@ -13,7 +13,10 @@ export const cppAdapter: LanguageAdapter = {
   displayName: "C/C++",
   fileExtensions: ["c", "cpp", "cc", "cxx", "h", "hpp", "hxx", "hh"],
   scanSourceFiles,
-  extractSymbolsFromCode,
+  // C++ 使用 extractSymbolsFromCodeAsync，这里提供占位符以满足接口
+  extractSymbolsFromCode: () => {
+    throw new Error("C++ uses extractSymbolsFromCodeAsync, not extractSymbolsFromCode");
+  },
   extractImplementationFromCode,
   extractImplementationForSymbol,
   inferPathModuleHint,

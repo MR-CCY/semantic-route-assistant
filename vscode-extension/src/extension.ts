@@ -24,14 +24,12 @@ type CategorizedTagIndex = {
 
 type RoutingJson = {
   schemaVersion?: number;
-  modules: {
-    [moduleName: string]: string;
-  };
   tagIndex: CategorizedTagIndex;
   symbols: {
     [symbolId: string]: {
       module: string;
       declHash: string;
+      implHash?: string;
       declLine?: number;
       implLine?: number;
       filePath?: string;
@@ -83,7 +81,6 @@ type LlmProfile = {
   model?: string;
   baseUrl?: string;
   systemPrompt?: string;
-  userPrompt?: string;
 };
 
 const CONFIG_SECTION = "semanticRoute";
@@ -113,6 +110,13 @@ function sanitizeProfileId(label: string): string {
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "");
   return slug || `profile-${Date.now()}`;
+}
+
+function normalizeIgnorePatterns(patterns: string[] | undefined): string[] {
+  if (!Array.isArray(patterns)) {
+    return [];
+  }
+  return patterns.map((pattern) => String(pattern).trim()).filter(Boolean);
 }
 
 function countOccurrences(haystack: string, needle: string): number {
@@ -682,9 +686,12 @@ function getTagGraphHtml(): string {
     .list {
       overflow: auto;
       display: grid;
+      grid-template-columns: minmax(0, 1fr);
       gap: 10px;
       padding-bottom: 6px;
       justify-items: center;
+      width: 100%;
+      min-width: 0;
     }
     .item {
       padding: 10px 12px;
@@ -695,6 +702,7 @@ function getTagGraphHtml(): string {
       transition: border 0.2s ease;
       width: 100%;
       max-width: 920px;
+      min-width: 0;
       box-sizing: border-box;
     }
     .item:hover {
@@ -719,6 +727,7 @@ function getTagGraphHtml(): string {
       gap: 6px;
       flex-wrap: wrap;
       align-items: center;
+      min-width: 0;
     }
     @media (max-width: 900px) {
       .layout { grid-template-rows: 1fr 45%; }
@@ -2127,6 +2136,8 @@ function resolveActiveProfile(
 async function applyLlmEnv(context: vscode.ExtensionContext): Promise<void> {
   const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
   const enabled = config.get<boolean>("llm.enabled", true);
+  const aggregationEnabled = config.get<boolean>("llm.aggregationEnabled", true);
+  delete process.env.SRCA_LLM_USER_PROMPT;
   const profiles = await getProfiles(config);
   const activeProfileId = config.get<string>("llm.activeProfile") || "";
   const activeProfile = resolveActiveProfile(profiles, activeProfileId);
@@ -2136,7 +2147,6 @@ async function applyLlmEnv(context: vscode.ExtensionContext): Promise<void> {
   const baseUrl = activeProfile?.baseUrl || config.get<string>("llm.baseUrl") || "";
   const systemPrompt =
     activeProfile?.systemPrompt || config.get<string>("llm.systemPrompt") || "";
-  const userPrompt = activeProfile?.userPrompt || config.get<string>("llm.userPrompt") || "";
 
   const apiKey = activeProfile
     ? (await context.secrets.get(getProfileSecretKey(activeProfile.id))) || ""
@@ -2148,7 +2158,7 @@ async function applyLlmEnv(context: vscode.ExtensionContext): Promise<void> {
     delete process.env.SRCA_LLM_API_KEY;
     delete process.env.SRCA_LLM_BASE_URL;
     delete process.env.SRCA_LLM_SYSTEM_PROMPT;
-    delete process.env.SRCA_LLM_USER_PROMPT;
+    delete process.env.SRCA_LLM_AGGREGATION_ENABLED;
     return;
   }
 
@@ -2162,7 +2172,7 @@ async function applyLlmEnv(context: vscode.ExtensionContext): Promise<void> {
     delete process.env.SRCA_LLM_API_KEY;
     delete process.env.SRCA_LLM_BASE_URL;
     delete process.env.SRCA_LLM_SYSTEM_PROMPT;
-    delete process.env.SRCA_LLM_USER_PROMPT;
+    delete process.env.SRCA_LLM_AGGREGATION_ENABLED;
     return;
   }
 
@@ -2181,11 +2191,8 @@ async function applyLlmEnv(context: vscode.ExtensionContext): Promise<void> {
   } else {
     delete process.env.SRCA_LLM_SYSTEM_PROMPT;
   }
-  if (userPrompt) {
-    process.env.SRCA_LLM_USER_PROMPT = userPrompt;
-  } else {
-    delete process.env.SRCA_LLM_USER_PROMPT;
-  }
+
+  process.env.SRCA_LLM_AGGREGATION_ENABLED = aggregationEnabled ? "1" : "0";
 }
 
 async function promptModel(
@@ -2266,12 +2273,6 @@ async function promptProfileInfo(
     ignoreFocusOut: true
   });
 
-  const userPrompt = await vscode.window.showInputBox({
-    prompt: "可选：User Prompt 模板（支持 {{moduleName}}/{{signature}}/{{implementation}}）",
-    value: base?.userPrompt || "",
-    ignoreFocusOut: true
-  });
-
   const id = base?.id || sanitizeProfileId(label);
   const profile: LlmProfile = {
     id,
@@ -2279,8 +2280,7 @@ async function promptProfileInfo(
     provider: providerPick,
     model: modelPick,
     baseUrl: baseUrl || "",
-    systemPrompt: systemPrompt || "",
-    userPrompt: userPrompt || ""
+    systemPrompt: systemPrompt || ""
   };
 
   if (apiKey) {
@@ -2455,6 +2455,9 @@ export function activate(context: vscode.ExtensionContext): void {
     const projectRoot = folders[0].uri.fsPath;
     const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
     const briefConcurrency = config.get<number>("llm.briefConcurrency", 4);
+    const ignorePatterns = normalizeIgnorePatterns(
+      config.get<string[]>("index.ignorePatterns", [])
+    );
     const buildV3 = (core as any).buildModuleIndexV3 as
       | ((
         projectRoot: string,
@@ -2462,8 +2465,10 @@ export function activate(context: vscode.ExtensionContext): void {
         options?: {
           onProgress?: (info: { current: number; total: number; filePath?: string }) => void;
           onBriefProgress?: (info: { current: number; total: number }) => void;
+          onAggregationProgress?: (info: { current: number; total: number }) => void;
           briefConcurrency?: number;
           writeSkillsFiles?: boolean;
+          ignorePatterns?: string[];
         }
       ) => Promise<void>)
       | undefined;
@@ -2489,6 +2494,7 @@ export function activate(context: vscode.ExtensionContext): void {
         await buildV3(projectRoot, outDir, {
           briefConcurrency,
           writeSkillsFiles: false,
+          ignorePatterns,
           onProgress: (info: { current: number; total: number; filePath?: string }) => {
             const relativePath = info.filePath
               ? path.relative(projectRoot, info.filePath)
@@ -2501,6 +2507,11 @@ export function activate(context: vscode.ExtensionContext): void {
           onBriefProgress: (info: { current: number; total: number }) => {
             progress.report({
               message: `生成 brief ${info.current}/${info.total}`
+            });
+          },
+          onAggregationProgress: (info: { current: number; total: number }) => {
+            progress.report({
+              message: `语义聚合 ${info.current}/${info.total}`
             });
           }
         });
@@ -2521,6 +2532,9 @@ export function activate(context: vscode.ExtensionContext): void {
     const projectRoot = folders[0].uri.fsPath;
     const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
     const briefConcurrency = config.get<number>("llm.briefConcurrency", 4);
+    const ignorePatterns = normalizeIgnorePatterns(
+      config.get<string[]>("index.ignorePatterns", [])
+    );
     const updateV3 = (core as any).updateModuleIndexV3 as
       | ((
         projectRoot: string,
@@ -2528,7 +2542,9 @@ export function activate(context: vscode.ExtensionContext): void {
         options?: {
           onProgress?: (info: { current: number; total: number; filePath?: string }) => void;
           onBriefProgress?: (info: { current: number; total: number }) => void;
+          onAggregationProgress?: (info: { current: number; total: number }) => void;
           briefConcurrency?: number;
+          ignorePatterns?: string[];
         }
       ) => Promise<void>)
       | undefined;
@@ -2553,6 +2569,7 @@ export function activate(context: vscode.ExtensionContext): void {
         progress.report({ message: "正在扫描文件..." });
         await updateV3(projectRoot, outDir, {
           briefConcurrency,
+          ignorePatterns,
           onProgress: (info: { current: number; total: number; filePath?: string }) => {
             const relativePath = info.filePath
               ? path.relative(projectRoot, info.filePath)
@@ -2565,6 +2582,11 @@ export function activate(context: vscode.ExtensionContext): void {
           onBriefProgress: (info: { current: number; total: number }) => {
             progress.report({
               message: `生成 brief ${info.current}/${info.total}`
+            });
+          },
+          onAggregationProgress: (info: { current: number; total: number }) => {
+            progress.report({
+              message: `语义聚合 ${info.current}/${info.total}`
             });
           }
         });

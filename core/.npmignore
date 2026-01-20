@@ -1,0 +1,8 @@
+src/
+tsconfig.json
+*.ts
+!*.d.ts
+node_modules/
+test-wasm.js
+test-wasm.ts
+test-wasm.mjs

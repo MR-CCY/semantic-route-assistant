@@ -5,8 +5,13 @@
   "private": true,
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "wasm"
+  ],
   "scripts": {
     "build": "tsc",
+    "postbuild": "mkdir -p dist/wasm && cp wasm/*.wasm dist/wasm/ && cp node_modules/web-tree-sitter/web-tree-sitter.wasm dist/web-tree-sitter.wasm",
     "dev": "ts-node src/index.ts"
   },
   "dependencies": {
@@ -18,6 +23,7 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "ts-node": "^10.9.2",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "web-tree-sitter": "^0.26.3"
   }
 }

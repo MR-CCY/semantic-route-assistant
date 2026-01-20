@@ -37,33 +37,6 @@ Semantic Routing Code Assistant 是面向 AI 编程的语义索引系统。
 
 ---
 
-## 📂 目录结构
-
-```
-semantic-route-assistant/
-├── core/                    # Node/TypeScript 核心引擎
-│   └── src/
-│       ├── language/        # 语言适配器 (10种语言)
-│       │   ├── cppAdapter.ts
-│       │   ├── javaAdapter.ts
-│       │   ├── jsAdapter.ts
-│       │   ├── pythonAdapter.ts
-│       │   ├── goAdapter.ts
-│       │   ├── rustAdapter.ts
-│       │   ├── rubyAdapter.ts
-│       │   ├── phpAdapter.ts
-│       │   ├── csharpAdapter.ts
-│       │   └── bashAdapter.ts
-│       ├── indexV3.ts       # V3 索引构建主逻辑
-│       └── ...
-├── vscode-extension/        # VS Code 扩展
-├── examples/                # 示例项目
-├── docs/                    # 设计文档
-└── scripts/                 # 开发脚本
-```
-
----
-
 ## 🌐 支持的语言
 
 | 语言 | 文件扩展名 | 符号提取 | 标签推断 |
@@ -194,14 +167,6 @@ semantic-route-assistant/
 - `semanticRoute.skills.autoTopN`: Auto Skills 自动选取数量
 - `semanticRoute.index.ignorePatterns`: 忽略索引的文件/目录（.gitignore 规则，工作区级别）
 - Skills 开关不在设置中，通过 `Semantic Route: Toggle Skills` 控制
-
----
-
-## 🛠️ 扩展新语言
-
-1. 在 `core/src/language/` 添加适配器
-2. 在 `core/src/language/index.ts` 注册适配器
-3. 运行 `./scripts/rebuild.sh`
 
 ---
 

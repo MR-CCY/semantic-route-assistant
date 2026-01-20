@@ -51,7 +51,12 @@ async function collectSymbols(projectRoot: string): Promise<{
     const fileHash = hashContent(code);
     fileHashes[relativePath] = fileHash;
 
-    const extracted = extractSymbolsFromCode(code, relativePath);
+    // 特殊处理：C++ 文件使用 WASM 异步版本
+    const isCppFile = /\.(c|cpp|cc|cxx|h|hpp|hxx|hh)$/i.test(relativePath);
+    const extracted = isCppFile
+      ? await (await import("./symbolExtractor")).extractSymbolsFromCodeAsync(code, relativePath)
+      : [];
+
     const moduleName = mapModuleName(relativePath);
 
     for (const symbol of extracted) {

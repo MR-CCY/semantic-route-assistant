@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ROUTING_SCHEMA_VERSION = void 0;
+exports.createEmptyTagMetadata = createEmptyTagMetadata;
 exports.findTagType = findTagType;
 exports.getTagFromAnyCategory = getTagFromAnyCategory;
 exports.buildRoutingFromModules = buildRoutingFromModules;
@@ -16,7 +17,28 @@ exports.updateSymbolTags = updateSymbolTags;
 exports.saveRouting = saveRouting;
 const path_1 = __importDefault(require("path"));
 const promises_1 = require("fs/promises");
-exports.ROUTING_SCHEMA_VERSION = 3;
+exports.ROUTING_SCHEMA_VERSION = 4;
+function createEmptyTagMetadata() {
+    return {
+        aliases: {},
+        categories: {},
+        version: 1
+    };
+}
+function normalizeTagMetadata(tagMetadata) {
+    const hasAliases = Boolean(tagMetadata && tagMetadata.aliases && typeof tagMetadata.aliases === "object");
+    const hasCategories = Boolean(tagMetadata && tagMetadata.categories && typeof tagMetadata.categories === "object");
+    const hasVersion = typeof tagMetadata?.version === "number";
+    const normalized = {
+        aliases: tagMetadata?.aliases ?? {},
+        categories: tagMetadata?.categories ?? {},
+        version: hasVersion ? tagMetadata.version : 1
+    };
+    return {
+        normalized,
+        changed: !tagMetadata || !hasAliases || !hasCategories || !hasVersion
+    };
+}
 /**
  * Helper to create empty categorized tag index
  */
@@ -50,15 +72,14 @@ function findTagType(tagIndex, tag) {
 function getTagFromAnyCategory(tagIndex, tag) {
     return tagIndex.base[tag] || tagIndex.semantic[tag] || tagIndex.custom[tag];
 }
-function buildRoutingFromModules(moduleEntries, existingTagIndex) {
+function buildRoutingFromModules(moduleEntries, existingTagIndex, existingTagMetadata) {
     const routing = {
         schemaVersion: exports.ROUTING_SCHEMA_VERSION,
-        modules: {},
         tagIndex: createEmptyTagIndex(),
+        tagMetadata: existingTagMetadata ?? createEmptyTagMetadata(),
         symbols: {}
     };
     for (const [moduleName, entries] of Object.entries(moduleEntries)) {
-        routing.modules[moduleName] = `./modules/${moduleName}.md`;
         for (const entry of entries) {
             // Merge all tags into unified array
             const allTags = [
@@ -71,6 +92,7 @@ function buildRoutingFromModules(moduleEntries, existingTagIndex) {
             routing.symbols[entry.id] = {
                 module: moduleName,
                 declHash: entry.declHash,
+                implHash: entry.implHash,
                 declLine: entry.declLine,
                 implLine: entry.implLine,
                 filePath: entry.filePath,
@@ -190,6 +212,11 @@ function normalizeRouting(routing) {
         routing.tagIndex = createEmptyTagIndex();
         migrated = true;
     }
+    const normalizedMetadata = normalizeTagMetadata(routing.tagMetadata);
+    if (normalizedMetadata.changed) {
+        routing.tagMetadata = normalizedMetadata.normalized;
+        migrated = true;
+    }
     return { routing, migrated };
 }
 async function loadRouting(indexRoot) {
@@ -207,8 +234,8 @@ async function loadRouting(indexRoot) {
         if (error?.code === "ENOENT") {
             return {
                 schemaVersion: exports.ROUTING_SCHEMA_VERSION,
-                modules: {},
                 tagIndex: createEmptyTagIndex(),
+                tagMetadata: createEmptyTagMetadata(),
                 symbols: {}
             };
         }
