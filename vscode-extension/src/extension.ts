@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import path from "path";
 import { readFile, access, readdir } from "fs/promises";
 import { constants as fsConstants } from "fs";
+import os from "os";
 import * as core from "semantic-route-assistant-core";
 import { createHash } from "crypto";
 
@@ -89,6 +90,8 @@ const PROFILE_SECRET_PREFIX = "semanticRoute.llm.apiKey.profile.";
 const OUTPUT_CHANNEL = vscode.window.createOutputChannel("Semantic Route");
 const SKILLS_VERSION_KEY = "semanticRoute.skillsVersion";
 const SKILLS_ENABLED_KEY = "semanticRoute.skillsEnabled";
+const SKILLS_NAME = "find-logic-implementation";
+const LEGACY_SKILLS_NAME = "find-existing-code";
 
 const PROVIDERS = ["openai", "qwen", "gemini", "other", "disable"] as const;
 const PROFILE_PROVIDERS = ["openai", "qwen", "gemini", "other"] as const;
@@ -1795,6 +1798,35 @@ function getTagGraphHtml(): string {
       });
     }
 
+    function computeTagCounts() {
+      const counts = { total: tagData.length, base: 0, semantic: 0, custom: 0 };
+      tagData.forEach((item) => {
+        if (item.tagType === 'base') counts.base += 1;
+        else if (item.tagType === 'semantic') counts.semantic += 1;
+        else if (item.tagType === 'custom') counts.custom += 1;
+      });
+      return counts;
+    }
+
+    function setFilterTooltips(container, counts) {
+      if (!container) return;
+      container.querySelectorAll('button[data-filter]').forEach((btn) => {
+        const key = btn.getAttribute('data-filter');
+        let title = '';
+        if (key === 'all') title = '全部：共 ' + counts.total + ' 个标签';
+        if (key === 'base') title = '基础：' + counts.base + ' 个标签';
+        if (key === 'semantic') title = '语义：' + counts.semantic + ' 个标签';
+        if (key === 'custom') title = '自定义：' + counts.custom + ' 个标签';
+        btn.title = title;
+      });
+    }
+
+    function updateFilterTooltips() {
+      const counts = computeTagCounts();
+      setFilterTooltips(filterActions, counts);
+      setFilterTooltips(popupFilterActions, counts);
+    }
+
     window.addEventListener('message', (event) => {
       const message = event.data;
       if (message.type === 'data') {
@@ -1804,6 +1836,7 @@ function getTagGraphHtml(): string {
           updateList();
         }
         updateSuggestions(searchInput.value || '');
+        updateFilterTooltips();
         if (pendingSelection) {
           applyTagSelection(pendingSelection.tags || [], pendingSelection.focusTag);
           pendingSelection = null;
@@ -2944,17 +2977,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
 async function ensureSkillsOnActivate(context: vscode.ExtensionContext): Promise<void> {
   const enabled = await resolveSkillsEnabled(context);
-  if (!enabled) {
-    const removeSkillsFiles = (core as any).removeSkillsFiles as
-      | (() => Promise<void>)
-      | undefined;
-    if (removeSkillsFiles) {
-      try {
-        await removeSkillsFiles();
-      } catch (error) {
-        console.warn("Semantic Route: Failed to remove skills files.", error);
-      }
-    }
+  const hasExisting = await hasExistingSkillsDirs();
+  if (!enabled && !hasExisting) {
     await context.globalState.update(SKILLS_VERSION_KEY, undefined);
     return;
   }
@@ -2986,6 +3010,27 @@ async function ensureSkillsOnActivate(context: vscode.ExtensionContext): Promise
   }
 }
 
+async function hasExistingSkillsDirs(): Promise<boolean> {
+  const homeDir = os.homedir();
+  const dirs = [
+    path.join(homeDir, ".claude", "skills", SKILLS_NAME),
+    path.join(homeDir, ".codex", "skills", SKILLS_NAME),
+    path.join(homeDir, ".claude", "skills", LEGACY_SKILLS_NAME),
+    path.join(homeDir, ".codex", "skills", LEGACY_SKILLS_NAME)
+  ];
+
+  for (const dir of dirs) {
+    try {
+      await access(dir, fsConstants.F_OK);
+      return true;
+    } catch {
+      // ignore missing paths
+    }
+  }
+
+  return false;
+}
+
 async function resolveSkillsEnabled(context: vscode.ExtensionContext): Promise<boolean> {
   const stored = context.globalState.get<boolean>(SKILLS_ENABLED_KEY);
   if (stored !== undefined) {
@@ -2995,7 +3040,7 @@ async function resolveSkillsEnabled(context: vscode.ExtensionContext): Promise<b
   const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
   const legacyWriteOnBuild = config.get<boolean>("skills.writeOnBuild");
   const legacyEnabled = config.get<boolean>("skills.enabled");
-  const resolved = legacyWriteOnBuild ?? legacyEnabled ?? true;
+  const resolved = legacyWriteOnBuild ?? legacyEnabled ?? false;
 
   await context.globalState.update(SKILLS_ENABLED_KEY, resolved);
   if (legacyWriteOnBuild !== undefined) {

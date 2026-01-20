@@ -2,6 +2,7 @@
   "name": "semantic-route-assistant-core",
   "version": "0.1.0",
   "description": "Semantic index engine for Semantic Route Assistant.",
+  "license": "MIT",
   "private": true,
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

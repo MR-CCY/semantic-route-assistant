@@ -83,14 +83,97 @@ function normalizeTags(tags: unknown): string[] {
   return Array.from(unique);
 }
 
+function stripComments(input: string): string {
+  return input
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/.*$/gm, " ")
+    .replace(/#.*$/gm, " ");
+}
+
+function extractImplementationBody(input: string): string {
+  const start = input.indexOf("{");
+  const end = input.lastIndexOf("}");
+  if (start !== -1 && end > start) {
+    return input.slice(start + 1, end);
+  }
+  return input;
+}
+
+function adjustTagsForTrivialImplementation(impl: string | undefined, tags: string[]): string[] {
+  if (!impl) {
+    return tags;
+  }
+  const body = extractImplementationBody(impl);
+  const stripped = stripComments(body).replace(/\s+/g, " ").trim();
+  if (!stripped) {
+    return ["空返回"];
+  }
+  if (/^return\s*;?\s*$/i.test(stripped)) {
+    return ["空返回"];
+  }
+  if (/^return\s*(\{\}|\[\]|null|nullptr|undefined|none|nil|std::nullopt|""|'')\s*;?\s*$/i.test(stripped)) {
+    return ["空返回"];
+  }
+  return tags;
+}
+
+function getTrivialBriefAndTags(input: BriefInput): BriefResult | null {
+  if (!input.implementation) {
+    return null;
+  }
+  const body = extractImplementationBody(input.implementation);
+  const stripped = stripComments(body).replace(/\s+/g, " ").trim();
+  if (!stripped) {
+    return { brief: "空返回", tags: ["空返回"] };
+  }
+  if (/^return\s*;?\s*$/i.test(stripped)) {
+    return { brief: "空返回", tags: ["空返回"] };
+  }
+  if (
+    /^return\s*(\{\}|\[\]|null|nullptr|undefined|none|nil|std::nullopt|""|'')\s*;?\s*$/i.test(
+      stripped
+    )
+  ) {
+    return { brief: "空返回", tags: ["空返回"] };
+  }
+  if (!/^return\s+/.test(stripped)) {
+    return null;
+  }
+  const expr = stripped.replace(/^return\s+/, "").replace(/;\s*$/, "").trim();
+  if (!expr) {
+    return null;
+  }
+  if (/[(){}\[\]+*/%&|^!?=]/.test(expr)) {
+    return null;
+  }
+  const exprNoArrow = expr.replace(/->/g, "");
+  if (/[<>]/.test(exprNoArrow)) {
+    return null;
+  }
+  if (/[^A-Za-z0-9_$.]/.test(exprNoArrow)) {
+    return null;
+  }
+  const isMemberReturn =
+    expr.includes("this.") ||
+    expr.includes("this->") ||
+    /^(_|m_)[A-Za-z0-9_]+$/.test(expr);
+  if (isMemberReturn) {
+    return { brief: "返回成员变量", tags: ["成员变量访问", "只读访问"] };
+  }
+  return { brief: "简单返回", tags: ["简单返回"] };
+}
+
 const DEFAULT_SYSTEM_PROMPT =
-  "你是一个代码审查助手，支持多种语言。" +
-  "根据给定的函数签名和实现，生成 brief 与 tags。" +
-  "brief 为一句话功能描述（不超过 50 个字），准确、不幻想；tags 数量不限制，尽量覆盖算法/意图/技巧/副作用/特性/能力，" +
-  "标签可中英混合（中文或 snake_case 英文均可）。标签尽量使用名词或名词短语，动作用名词化表达。" +
-  "只基于签名/实现中的明确证据生成标签，避免抽象推断或臆测；无明确证据则不输出。" +
-  "避免只描述语言机制/控制流/通用实现细节（如异步/返回/异常捕获/解析等），优先领域或功能语义。" +
-  "只保留高信息量语义标签，避免文件路径/模块名/类名/函数名拆词，低质量通用词会在后处理过滤。" ;
+  "你是一位拥有 20 年经验的资深代码架构师和算法专家。" +
+  "分析函数签名与实现，生成 brief 与 tags。" +
+  "brief 不超过 50 字，准确客观，不幻想。" +
+  "tags 目标是高熵信息：算法/数据结构、设计模式、关键行为/副作用、明确业务语义；结构即证据。" +
+  "标签可中文或 snake_case 英文，优先名词或名词短语；数量不限但宁缺毋滥。" +
+  "只基于当前代码中的明确证据，不要过度联想；无证据则不输出。" +
+  "若实现为空或仅默认返回（如 return {} / return null），只输出空返回/占位实现。" +
+  "若为简单实现（仅返回成员变量/常量/直传参数），只输出简单语义，不扩展为管理/流程/结构类标签。" +
+  "严禁语法噪音（function/class/void 等）、通用动词（processing/handling/managing）和泛化标签（控制流/指针/数据操作/生命周期/结构体等）。" +
+  "避免文件路径/模块名/类名/函数名拆词，低质量通用词会在后处理过滤。" ;
 
 const DEFAULT_USER_PROMPT = [
   "返回 JSON：{brief, tags}",
@@ -125,6 +208,11 @@ export async function generateBriefAndTagsForSymbol(input: BriefInput): Promise<
   const temperature = Number.isFinite(temperatureEnv)
     ? Math.min(1, Math.max(0, temperatureEnv))
     : 0;
+
+  const trivialResult = getTrivialBriefAndTags(input);
+  if (trivialResult) {
+    return trivialResult;
+  }
 
   if (!provider) {
     return { brief: `自动生成描述: ${input.signature}`, tags: [] };
@@ -181,7 +269,10 @@ export async function generateBriefAndTagsForSymbol(input: BriefInput): Promise<
           if (parsed?.brief) {
             return {
               brief: parsed.brief.trim(),
-              tags: normalizeTags(parsed.tags || [])
+              tags: adjustTagsForTrivialImplementation(
+                input.implementation,
+                normalizeTags(parsed.tags || [])
+              )
             };
           }
         } catch {

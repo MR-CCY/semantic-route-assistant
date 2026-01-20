@@ -8,6 +8,8 @@ Semantic Routing Code Assistant 是面向 AI 编程的语义索引系统。
 系统以函数/类为最小单元生成高密度索引，并通过 VS Code 插件与 Skill 机制，
 让 AI 先“查能力表”、再“写代码”，而不是盲目搜索或就地生成。
 
+Token 预估（语义聚合）：100 个新标签 + 50 个已有标签（每个约 5 字），输入+输出约 1.4k–1.6k tokens，视标签长度而变。
+
 ---
 
 ## ✨ 核心特性
@@ -27,7 +29,7 @@ Semantic Routing Code Assistant 是面向 AI 编程的语义索引系统。
 3. 运行 `Semantic Route: Build Index` 生成 `.ai_context/`
 4. 运行 `Semantic Route: Tag Graph` 查看/筛选/编辑标签
 5. 日常修改后运行 `Semantic Route: Update Index` 做增量更新
-6. 可选操作：
+6. 可选操作（Skills 默认关闭）：
    - `Semantic Route: Configure LLM` 配置 LLM 提供商
    - `Semantic Route: Auto Skills (Doc)` 生成当前上下文技能文档（到编辑器）
    - `Semantic Route: Auto Skills (Clipboard)` 生成当前上下文技能文档（到剪贴板）
@@ -99,10 +101,10 @@ semantic-route-assistant/
 
 ## 🤖 Agent Skills (新特性)
 
-本插件默认使用 **Global Skills** 模式，将查找能力直接注入到 AI Agent (Claude/Cursor/Copilot) 中。
+Skills 为可选能力（默认关闭），需手动启用后才会写入技能文件。
 
 ### 自动安装的 Skill
-开启 `Semantic Route: Toggle Skills` 后，会自动在 `~/.claude/skills/find-logic-implementation/` 与 `~/.codex/skills/find-logic-implementation/` 写入 `SKILL.md` 与脚本（版本更新时会自动覆盖更新）。
+运行 `Semantic Route: Toggle Skills` 启用后，才会在 `~/.claude/skills/find-logic-implementation/` 与 `~/.codex/skills/find-logic-implementation/` 写入 `SKILL.md` 与脚本。若此前已创建该目录，扩展更新时会自动刷新；否则需手动运行该命令创建。
 
 1.  **Tag Search (`search.py` / `search.sh`)**:
     *   组内 OR、组间 AND（用 `|` 表示同义组）
@@ -193,7 +195,7 @@ semantic-route-assistant/
 - `semanticRoute.llm.systemPrompt`: 生成 brief/语义标签的 System Prompt（留空用默认）
 - `semanticRoute.skills.autoTopN`: Auto Skills 自动选取数量
 - `semanticRoute.index.ignorePatterns`: 忽略索引的文件/目录（.gitignore 规则，工作区级别）
-- Skills 开关不在设置中，通过 `Semantic Route: Toggle Skills` 控制
+- Skills 开关不在设置中，通过 `Semantic Route: Toggle Skills` 控制（默认关闭）
 
 ---
 
