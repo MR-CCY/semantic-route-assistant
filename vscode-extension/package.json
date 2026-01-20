@@ -2,8 +2,10 @@
   "name": "semantic-route-assistant",
   "displayName": "Semantic Route Assistant",
   "description": "VS Code extension for building semantic route index stubs.",
-  "version": "0.0.1",
-  "publisher": "your-publisher",
+  "license": "MIT",
+  "version": "2.0.0",
+  "publisher": "ccy",
+  "icon": "media/icon.png",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -11,17 +13,9 @@
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onCommand:semanticRoute.buildIndex",
-    "onCommand:semanticRoute.configureLLM",
-    "onCommand:semanticRoute.autoSkillsDoc",
-    "onCommand:semanticRoute.autoSkillsClipboard",
-    "onCommand:semanticRoute.openTagGraph",
-    "onView:semanticRoute.tagGraph",
-    "onCommand:semanticRoute.updateIndex",
-    "onCommand:semanticRoute.searchSkills"
+    "*"
   ],
-  "main": "./out/extension.js",
+  "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
@@ -41,6 +35,10 @@
         "title": "Semantic Route: Tag Graph"
       },
       {
+        "command": "semanticRoute.revealSymbolAtCursor",
+        "title": "Semantic Route: 在图谱中显示当前符号"
+      },
+      {
         "command": "semanticRoute.buildIndex",
         "title": "Semantic Route: Build Index"
       },
@@ -51,15 +49,24 @@
       {
         "command": "semanticRoute.searchSkills",
         "title": "Semantic Route: Search Skill Blocks"
+      },
+      {
+        "command": "semanticRoute.toggleSkills",
+        "title": "Semantic Route: Toggle Skills"
       }
     ],
     "configuration": {
       "title": "Semantic Route",
       "properties": {
-        "semanticRoute.llm.provider": {
-          "type": "string",
-          "default": "",
-          "description": "LLM 提供方（openai/qwen/gemini）。留空将禁用 LLM。"
+        "semanticRoute.llm.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用或禁用 LLM。"
+        },
+        "semanticRoute.llm.aggregationEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用语义标签聚合（LLM 归并未知语义标签以减少冗余）。关闭后仅本地清洗，不做聚合，未知标签保持独立。"
         },
         "semanticRoute.llm.activeProfile": {
           "type": "string",
@@ -90,22 +97,29 @@
               },
               "systemPrompt": {
                 "type": "string"
-              },
-              "userPrompt": {
-                "type": "string"
               }
             }
           }
         },
-        "semanticRoute.llm.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "启用或禁用 LLM。"
+        "semanticRoute.llm.provider": {
+          "type": "string",
+          "default": "",
+          "description": "LLM 提供方（openai/qwen/gemini）。留空将禁用 LLM。"
         },
         "semanticRoute.llm.model": {
           "type": "string",
           "default": "",
           "description": "LLM 模型名称。"
+        },
+        "semanticRoute.llm.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "可选的 API Base URL。"
+        },
+        "semanticRoute.llm.systemPrompt": {
+          "type": "string",
+          "default": "你是一位拥有 20 年经验的资深代码架构师和算法专家。分析函数签名与实现，生成 brief 与 tags。brief 不超过 50 字，准确客观，不幻想。tags 目标是高熵信息：算法/数据结构、设计模式、关键行为/副作用、明确业务语义；结构即证据。标签可中文或 snake_case 英文，优先名词或名词短语；数量不限但宁缺毋滥。只基于当前代码中的明确证据，不要过度联想；无证据则不输出。若实现为空或仅默认返回（如 return {} / return null），只输出空返回/占位实现。若为简单实现（仅返回成员变量/常量/直传参数），只输出简单语义，不扩展为管理/流程/结构类标签。严禁语法噪音（function/class/void 等）、通用动词（processing/handling/managing）和泛化标签（控制流/指针/数据操作/生命周期/结构体等）。避免文件路径/模块名/类名/函数名拆词，低质量通用词会在后处理过滤。",
+          "description": "用于生成 brief/语义标签的 System Prompt。留空则使用内置默认提示词。"
         },
         "semanticRoute.llm.briefConcurrency": {
           "type": "number",
@@ -117,20 +131,14 @@
           "default": 8,
           "description": "Auto Skills 自动选取的 Top N 数量。"
         },
-        "semanticRoute.llm.baseUrl": {
-          "type": "string",
-          "default": "",
-          "description": "可选的 API Base URL。"
-        },
-        "semanticRoute.llm.systemPrompt": {
-          "type": "string",
-          "default": "",
-          "description": "可选的 System Prompt。"
-        },
-        "semanticRoute.llm.userPrompt": {
-          "type": "string",
-          "default": "",
-          "description": "可选的 User Prompt 模板（支持占位符）。"
+        "semanticRoute.index.ignorePatterns": {
+          "type": "array",
+          "default": [],
+          "description": "忽略索引的文件/目录（支持 .gitignore 规则）。",
+          "scope": "resource",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },
@@ -142,23 +150,48 @@
           "type": "webview"
         }
       ]
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "semanticRoute.revealSymbolAtCursor",
+          "when": "editorTextFocus",
+          "group": "navigation@9"
+        }
+      ]
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "lint": "echo \"No lint configured\"",
-    "pretest": "npm run compile",
-    "test": "echo \"No tests configured\""
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
   },
   "dependencies": {
-    "semantic-route-assistant-core": "file:../core",
-    "semantic-route-core": "file:../core"
+    "fast-glob": "^3.3.2",
+    "ignore": "^5.3.1",
+    "tree-sitter": "^0.22.1",
+    "tree-sitter-cpp": "^0.23.4"
   },
   "devDependencies": {
     "@types/node": "^20.10.5",
     "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "esbuild": "^0.20.0",
+    "eslint": "^8.56.0",
+    "npm-run-all": "^4.1.5",
+    "semantic-route-assistant-core": "file:../core",
+    "semantic-route-core": "file:../core",
+    "ts-node": "^10.9.1",
     "typescript": "^5.4.0",
     "vsce": "^2.15.0"
   }

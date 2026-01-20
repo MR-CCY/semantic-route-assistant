@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -16,7 +49,10 @@ const metaStore_1 = require("./metaStore");
 const signatureUtils_1 = require("./signatureUtils");
 const moduleGrouper_1 = require("./moduleGrouper");
 const tagUtils_1 = require("./tagUtils");
+const tagAggregator_1 = require("./tagAggregator");
+const tagNormalizer_1 = require("./tagNormalizer");
 const language_1 = require("./language");
+const skillsGenerator_1 = require("./skillsGenerator");
 function hashContent(content) {
     return (0, crypto_1.createHash)("sha1").update(content).digest("hex");
 }
@@ -52,7 +88,7 @@ function buildMeta(fileHashes) {
 /**
  * Load .gitignore patterns from project root.
  */
-async function loadIgnorePatterns(projectRoot) {
+async function loadIgnorePatterns(projectRoot, extraPatterns) {
     const ig = (0, ignore_1.default)();
     const gitignorePath = path_1.default.join(projectRoot, ".gitignore");
     try {
@@ -64,15 +100,19 @@ async function loadIgnorePatterns(projectRoot) {
             throw error;
         }
     }
+    ig.add(["node_modules/", "**/node_modules/**"]);
+    if (extraPatterns && extraPatterns.length > 0) {
+        ig.add(extraPatterns.filter((pattern) => pattern && pattern.trim()));
+    }
     return ig;
 }
 /**
  * Scan source files for all supported languages.
  */
-async function scanAllLanguageFiles(projectRoot) {
+async function scanAllLanguageFiles(projectRoot, extraIgnorePatterns) {
     const extensions = (0, language_1.getSupportedExtensions)();
     const patterns = extensions.map((ext) => `**/*.${ext}`);
-    const ig = await loadIgnorePatterns(projectRoot);
+    const ig = await loadIgnorePatterns(projectRoot, extraIgnorePatterns);
     const matches = await (0, fast_glob_1.default)(patterns, {
         cwd: projectRoot,
         onlyFiles: true,
@@ -142,32 +182,35 @@ function parseModuleEntries(content) {
     }
     return entries;
 }
+function buildExistingEntriesFromRouting(existingRouting) {
+    const entries = new Map();
+    for (const [id, info] of Object.entries(existingRouting.symbols || {})) {
+        const baseTags = (info.tagsBase || []).map(normalizeTag).filter(Boolean);
+        const semanticSource = info.tagsSemantic && info.tagsSemantic.length > 0 ? info.tagsSemantic : info.tags || [];
+        const semanticTags = semanticSource.map(normalizeTag).filter(Boolean);
+        entries.set(id, {
+            signature: info.signature ?? "",
+            declHash: info.declHash,
+            implHash: info.implHash,
+            brief: info.brief ?? "",
+            baseTags,
+            semanticTags,
+            filePath: info.filePath
+        });
+    }
+    return entries;
+}
 async function loadExistingEntries(indexRoot) {
-    const modulesDir = path_1.default.join(indexRoot, "modules");
-    const entryMap = new Map();
-    let moduleFiles = [];
     try {
-        moduleFiles = await (0, fast_glob_1.default)("**/*.md", { cwd: modulesDir, onlyFiles: true });
+        const routing = await (0, routingStore_1.loadRouting)(indexRoot);
+        if (Object.keys(routing.symbols || {}).length > 0) {
+            return buildExistingEntriesFromRouting(routing);
+        }
     }
     catch {
-        return entryMap;
+        // fall through
     }
-    for (const relPath of moduleFiles) {
-        const filePath = path_1.default.join(modulesDir, relPath);
-        try {
-            const content = await (0, promises_1.readFile)(filePath, "utf8");
-            const entries = parseModuleEntries(content);
-            for (const [id, entry] of entries.entries()) {
-                if (!entryMap.has(id)) {
-                    entryMap.set(id, entry);
-                }
-            }
-        }
-        catch {
-            // ignore unreadable files
-        }
-    }
-    return entryMap;
+    return new Map();
 }
 function getChangedFiles(previousMeta, fileHashes) {
     const changed = new Set();
@@ -184,6 +227,102 @@ function getChangedFiles(previousMeta, fileHashes) {
         }
     }
     return changed;
+}
+function normalizeTag(tag) {
+    return tag.toLowerCase().trim();
+}
+function normalizeTagsWithLocalRules(tags) {
+    const seen = new Set();
+    const normalized = [];
+    for (const tag of tags) {
+        const cleaned = (0, tagNormalizer_1.localNormalize)(tag);
+        if (!cleaned || seen.has(cleaned)) {
+            continue;
+        }
+        seen.add(cleaned);
+        normalized.push(cleaned);
+    }
+    return normalized;
+}
+function applyAliasesToTags(tags, aliases) {
+    const seen = new Set();
+    const canonical = [];
+    for (const tag of tags) {
+        if (!tag) {
+            continue;
+        }
+        const resolved = (0, tagNormalizer_1.applyAliasMapping)(tag, aliases);
+        if (!resolved || seen.has(resolved)) {
+            continue;
+        }
+        seen.add(resolved);
+        canonical.push(resolved);
+    }
+    return canonical;
+}
+async function normalizeAndAggregateTags(symbols, existingMetadata, onAggregationProgress) {
+    let metadata = existingMetadata ?? (0, routingStore_1.createEmptyTagMetadata)();
+    const normalizedTags = [];
+    let rawBaseCount = 0;
+    let rawSemanticCount = 0;
+    const normalizedSemanticTags = [];
+    let normalizedSemanticCount = 0;
+    console.log(`[tagAggregation] 开始获取原语义标签 symbols=${symbols.length}`);
+    for (const symbol of symbols) {
+        rawBaseCount += (symbol.baseTags || []).length;
+        rawSemanticCount += (symbol.semanticTags || []).length;
+        symbol.baseTags = normalizeTagsWithLocalRules(symbol.baseTags || []);
+        symbol.semanticTags = normalizeTagsWithLocalRules(symbol.semanticTags || []);
+        normalizedSemanticCount += symbol.semanticTags.length;
+        normalizedSemanticTags.push(...symbol.semanticTags);
+        normalizedTags.push(...symbol.baseTags, ...symbol.semanticTags);
+    }
+    const uniqueNormalizedCount = new Set(normalizedTags).size;
+    const uniqueSemanticCount = new Set(normalizedSemanticTags).size;
+    console.log(`[tagAggregation] 获取完原语义标签 rawBase=${rawBaseCount} rawSemantic=${rawSemanticCount} normalizedSemantic=${normalizedSemanticCount} semanticUnique=${uniqueSemanticCount} normalizedTotal=${normalizedTags.length} normalizedUnique=${uniqueNormalizedCount}`);
+    const unknownTags = (0, tagAggregator_1.findUnknownTags)(normalizedSemanticTags, metadata.aliases, metadata.categories);
+    if (unknownTags.length > 0) {
+        metadata = await (0, tagAggregator_1.aggregateAllUnknownTags)(unknownTags, metadata, onAggregationProgress);
+    }
+    const cleanedAliases = (0, tagNormalizer_1.removeAliasCycles)(metadata.aliases);
+    if (Object.keys(cleanedAliases).length !== Object.keys(metadata.aliases).length) {
+        metadata = {
+            ...metadata,
+            aliases: cleanedAliases
+        };
+    }
+    const canonicalTags = [];
+    const canonicalSemanticTags = [];
+    for (const symbol of symbols) {
+        symbol.semanticTags = applyAliasesToTags(symbol.semanticTags || [], metadata.aliases);
+        canonicalTags.push(...symbol.baseTags, ...symbol.semanticTags);
+        canonicalSemanticTags.push(...symbol.semanticTags);
+    }
+    metadata = (0, tagAggregator_1.ensureCategoriesForTags)(metadata, canonicalTags);
+    metadata = (0, tagAggregator_1.updateCategoryCounts)(metadata, canonicalSemanticTags);
+    return metadata;
+}
+function collectExistingCustomTags(existingRouting) {
+    const customTagsBySymbol = new Map();
+    const customIndex = existingRouting.tagIndex?.custom ?? {};
+    for (const [symbolId, info] of Object.entries(existingRouting.symbols || {})) {
+        const legacyCustom = info.tagsCustom ?? [];
+        let customTags = legacyCustom;
+        if (customTags.length === 0) {
+            const tags = info.tags ?? [];
+            if (tags.length > 0) {
+                customTags = tags.filter((tag) => {
+                    const normalized = normalizeTag(tag);
+                    return normalized && customIndex[normalized];
+                });
+            }
+        }
+        const normalizedTags = Array.from(new Set(customTags.map(normalizeTag).filter(Boolean)));
+        if (normalizedTags.length > 0) {
+            customTagsBySymbol.set(symbolId, normalizedTags);
+        }
+    }
+    return customTagsBySymbol;
 }
 function renderModuleGroup(group) {
     const lines = [];
@@ -209,20 +348,65 @@ function renderModuleGroup(group) {
     return lines.join("\n");
 }
 async function buildModuleIndexV3(projectRoot, outDir, options) {
-    const adapter = (0, language_1.getLanguageAdapter)(options?.languageId);
-    const { fileHashes, symbols, briefTasks } = await collectSymbolsForV3(projectRoot, outDir, false, adapter, options);
-    await resolveBriefsForV3(projectRoot, adapter, briefTasks, symbols, options);
-    await writeV3Outputs(outDir, symbols, fileHashes);
+    const existingRouting = await (0, routingStore_1.loadRouting)(outDir).catch(() => ({
+        tagIndex: { base: {}, semantic: {}, custom: {} },
+        tagMetadata: (0, routingStore_1.createEmptyTagMetadata)(),
+        symbols: {}
+    }));
+    const stagingDir = `${outDir}.tmp`;
+    const backupDir = `${outDir}.bak`;
+    let backupCreated = false;
+    try {
+        await (0, promises_1.rm)(stagingDir, { recursive: true, force: true });
+        await (0, promises_1.mkdir)(stagingDir, { recursive: true });
+        const adapter = (0, language_1.getLanguageAdapter)(options?.languageId);
+        const { fileHashes, symbols, briefTasks } = await collectSymbolsForV3(projectRoot, outDir, false, adapter, options);
+        const writeSkillsFiles = options?.writeSkillsFiles ?? true;
+        await resolveBriefsForV3(projectRoot, adapter, briefTasks, symbols, options);
+        await writeV3Outputs(stagingDir, symbols, fileHashes, existingRouting, writeSkillsFiles, { onAggregationProgress: options?.onAggregationProgress });
+        await (0, promises_1.rm)(backupDir, { recursive: true, force: true });
+        try {
+            await (0, promises_1.rename)(outDir, backupDir);
+            backupCreated = true;
+        }
+        catch (error) {
+            if (error?.code !== "ENOENT") {
+                throw error;
+            }
+        }
+        await (0, promises_1.rename)(stagingDir, outDir);
+        if (backupCreated) {
+            await (0, promises_1.rm)(backupDir, { recursive: true, force: true });
+        }
+    }
+    catch (error) {
+        if (backupCreated) {
+            try {
+                await (0, promises_1.rename)(backupDir, outDir);
+            }
+            catch {
+                // ignore restore failure to preserve original error
+            }
+        }
+        try {
+            await (0, promises_1.rm)(stagingDir, { recursive: true, force: true });
+        }
+        catch {
+            // ignore cleanup errors
+        }
+        throw error;
+    }
 }
 async function collectSymbolsForV3(projectRoot, outDir, reuseExisting, defaultAdapter, options) {
     // Scan all supported language files
-    const files = await scanAllLanguageFiles(projectRoot);
+    const files = await scanAllLanguageFiles(projectRoot, options?.ignorePatterns);
     const fileHashes = {};
     const symbols = [];
     const briefTasks = [];
     const candidates = new Map();
     const existingEntries = reuseExisting ? await loadExistingEntries(outDir) : new Map();
     const previousMeta = reuseExisting ? await (0, metaStore_1.loadMeta)(outDir) : {};
+    const fileChangedMap = new Map();
     const totalFiles = files.length;
     let currentFile = 0;
     for (const absolutePath of files) {
@@ -232,8 +416,20 @@ async function collectSymbolsForV3(projectRoot, outDir, reuseExisting, defaultAd
         const adapter = (0, language_1.getAdapterForFile)(absolutePath) || defaultAdapter;
         const code = await (0, promises_1.readFile)(absolutePath, "utf8");
         fileHashes[relativePath] = hashContent(code);
+        if (reuseExisting) {
+            const previousHash = previousMeta[relativePath]?.hash;
+            fileChangedMap.set(relativePath, previousHash !== fileHashes[relativePath]);
+        }
         options?.onProgress?.({ current: currentFile, total: totalFiles, filePath: relativePath });
-        const extracted = adapter.extractSymbolsFromCode(code, relativePath);
+        // 特殊处理：C++ 文件使用 WASM 异步版本
+        let extracted;
+        if (adapter.id === "cpp") {
+            const { extractSymbolsFromCodeAsync } = await Promise.resolve().then(() => __importStar(require("./symbolExtractor")));
+            extracted = await extractSymbolsFromCodeAsync(code, relativePath);
+        }
+        else {
+            extracted = adapter.extractSymbolsFromCode(code, relativePath);
+        }
         for (const symbol of extracted) {
             const normalizedSignature = (0, signatureUtils_1.normalizeSignature)(symbol.signature);
             const declHash = (0, signatureUtils_1.hashSignature)(normalizedSignature);
@@ -280,10 +476,13 @@ async function collectSymbolsForV3(projectRoot, outDir, reuseExisting, defaultAd
     }
     for (const candidate of candidates.values()) {
         const existing = existingEntries.get(candidate.symbolId);
+        const fileChanged = reuseExisting
+            ? fileChangedMap.get(candidate.filePath) ?? true
+            : true;
         const canReuse = reuseExisting &&
             existing &&
             existing.declHash === candidate.declHash &&
-            existing.implHash === candidate.implHash;
+            (!fileChanged || (existing.implHash && existing.implHash === candidate.implHash));
         if (canReuse) {
             const baseTags = existing.baseTags.length > 0 ? existing.baseTags : candidate.baseTags;
             const semanticTags = existing.semanticTags.length > 0 ? existing.semanticTags : [];
@@ -319,6 +518,9 @@ async function resolveBriefsForV3(projectRoot, adapter, briefTasks, symbols, opt
     const concurrency = Math.max(1, Math.floor(options?.briefConcurrency ?? BRIEF_CONCURRENCY));
     let briefDone = 0;
     const briefTotal = briefTasks.length;
+    if (briefTotal > 0) {
+        console.log(`[briefGeneration] start total=${briefTotal} concurrency=${concurrency}`);
+    }
     const briefResults = await runWithConcurrency(briefTasks, concurrency, async (task) => {
         const impl = await adapter.extractImplementationForSymbol({
             projectRoot,
@@ -353,50 +555,64 @@ async function resolveBriefsForV3(projectRoot, adapter, briefTasks, symbols, opt
         };
         briefDone += 1;
         if (briefDone % 10 === 0 || briefDone === briefTotal) {
-            options?.onBriefProgress?.({ current: briefDone, total: briefTotal });
+            if (options?.onBriefProgress) {
+                options.onBriefProgress({ current: briefDone, total: briefTotal });
+            }
+            else {
+                console.log(`[briefGeneration] progress ${briefDone}/${briefTotal}`);
+            }
         }
         return result;
     });
     symbols.push(...briefResults);
 }
-async function writeV3Outputs(outDir, symbols, fileHashes) {
+async function writeV3Outputs(outDir, symbols, fileHashes, existingRouting, writeSkillsFiles, options) {
+    const resolvedExistingRouting = existingRouting ?? await (0, routingStore_1.loadRouting)(outDir).catch(() => ({
+        tagIndex: { base: {}, semantic: {}, custom: {} },
+        tagMetadata: (0, routingStore_1.createEmptyTagMetadata)(),
+        symbols: {}
+    }));
+    const tagMetadata = await normalizeAndAggregateTags(symbols, resolvedExistingRouting.tagMetadata, options?.onAggregationProgress);
     const groups = await (0, moduleGrouper_1.groupSymbolsToModulesWithLLM)(symbols, { maxSymbolsForLLM: 300 });
-    const modulesDir = path_1.default.join(outDir, "modules");
-    await (0, promises_1.mkdir)(modulesDir, { recursive: true });
-    const desiredModules = new Set(groups.map((group) => `${group.clusterId}.md`));
-    const existingModules = await (0, fast_glob_1.default)("**/*.md", { cwd: modulesDir, onlyFiles: true });
+    const customTagsBySymbol = collectExistingCustomTags(resolvedExistingRouting);
     const routingModules = {};
-    for (const relPath of existingModules) {
-        if (!desiredModules.has(relPath)) {
-            const fullPath = path_1.default.join(modulesDir, relPath);
-            try {
-                await (0, promises_1.unlink)(fullPath);
-            }
-            catch {
-                // ignore delete errors
-            }
-        }
-    }
     for (const group of groups) {
-        const modulePath = path_1.default.join(modulesDir, `${group.clusterId}.md`);
-        await (0, promises_1.writeFile)(modulePath, renderModuleGroup(group), "utf8");
-        routingModules[group.clusterId] = group.symbols.map((symbol) => ({
-            id: symbol.symbolId,
-            declHash: symbol.declHash,
-            declLine: symbol.declLine,
-            implLine: symbol.implLine,
-            filePath: symbol.filePath,
-            tagsBase: symbol.baseTags,
-            tagsSemantic: symbol.semanticTags
-        }));
+        routingModules[group.clusterId] = group.symbols.map((symbol) => {
+            const baseSet = new Set((symbol.baseTags || []).map(normalizeTag));
+            const semanticSet = new Set((symbol.semanticTags || []).map(normalizeTag));
+            const preservedCustom = (customTagsBySymbol.get(symbol.symbolId) || []).filter((tag) => !baseSet.has(tag) && !semanticSet.has(tag));
+            return {
+                id: symbol.symbolId,
+                declHash: symbol.declHash,
+                implHash: symbol.implHash,
+                declLine: symbol.declLine,
+                implLine: symbol.implLine,
+                filePath: symbol.filePath,
+                signature: symbol.signature,
+                brief: symbol.brief,
+                tagsBase: symbol.baseTags,
+                tagsSemantic: symbol.semanticTags,
+                tagsCustom: preservedCustom.length > 0 ? preservedCustom : undefined
+            };
+        });
     }
-    const routing = (0, routingStore_1.buildRoutingFromModules)(routingModules);
+    // Preserve tag scores while rebuilding
+    const routing = (0, routingStore_1.buildRoutingFromModules)(routingModules, resolvedExistingRouting.tagIndex, tagMetadata);
     await (0, routingStore_1.saveRouting)(outDir, routing);
     const meta = buildMeta(fileHashes);
     await (0, metaStore_1.saveMeta)(outDir, meta);
+    if (writeSkillsFiles) {
+        // Generate Claude Skills files
+        await (0, skillsGenerator_1.generateSkillsFiles)(outDir, symbols);
+    }
 }
 async function updateModuleIndexV3(projectRoot, outDir, options) {
     const adapter = (0, language_1.getLanguageAdapter)(options?.languageId);
+    const existingRouting = await (0, routingStore_1.loadRouting)(outDir).catch(() => ({
+        tagIndex: { base: {}, semantic: {}, custom: {} },
+        tagMetadata: (0, routingStore_1.createEmptyTagMetadata)(),
+        symbols: {}
+    }));
     const previousMeta = await (0, metaStore_1.loadMeta)(outDir);
     const { fileHashes, symbols, briefTasks } = await collectSymbolsForV3(projectRoot, outDir, true, adapter, options);
     const changedFiles = getChangedFiles(previousMeta, fileHashes);
@@ -404,5 +620,5 @@ async function updateModuleIndexV3(projectRoot, outDir, options) {
         return;
     }
     await resolveBriefsForV3(projectRoot, adapter, briefTasks, symbols, options);
-    await writeV3Outputs(outDir, symbols, fileHashes);
+    await writeV3Outputs(outDir, symbols, fileHashes, existingRouting, false, { onAggregationProgress: options?.onAggregationProgress });
 }

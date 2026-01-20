@@ -1,14 +1,81 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.initSymbolExtractor = initSymbolExtractor;
 exports.extractSymbolsFromCode = extractSymbolsFromCode;
-const tree_sitter_1 = __importDefault(require("tree-sitter"));
-const tree_sitter_cpp_1 = __importDefault(require("tree-sitter-cpp"));
+exports.extractSymbolsFromCodeAsync = extractSymbolsFromCodeAsync;
+const web_tree_sitter_1 = require("web-tree-sitter");
+const path = __importStar(require("path"));
 const signatureUtils_1 = require("./signatureUtils");
-const parser = new tree_sitter_1.default();
-parser.setLanguage(tree_sitter_cpp_1.default);
+// Parser 实例和初始化状态
+let parser = null;
+let isInitialized = false;
+/**
+ * 初始化 web-tree-sitter parser
+ * 必须在使用前调用一次
+ */
+async function initSymbolExtractor() {
+    if (isInitialized) {
+        return;
+    }
+    try {
+        // 1. 初始化 WASM runtime
+        await web_tree_sitter_1.Parser.init({
+            locateFile: (fileName) => path.join(__dirname, fileName)
+        });
+        // 2. 创建 Parser 实例
+        parser = new web_tree_sitter_1.Parser();
+        // 3. 加载 C++ 语言 WASM
+        const wasmPath = path.join(__dirname, "wasm", "tree-sitter-cpp.wasm");
+        const Cpp = await web_tree_sitter_1.Language.load(wasmPath);
+        parser.setLanguage(Cpp);
+        isInitialized = true;
+    }
+    catch (error) {
+        console.error("Failed to initialize symbol extractor:", error);
+        throw error;
+    }
+}
+/**
+ * 同步占位符 - 保持向后兼容
+ * 其他语言适配器使用各自的实现
+ * C++ 应使用 extractSymbolsFromCodeAsync
+ */
+function extractSymbolsFromCode(_code, _filePath) {
+    throw new Error("extractSymbolsFromCode is not implemented for C++. Use extractSymbolsFromCodeAsync instead.");
+}
 function getText(code, node) {
     return code.slice(node.startIndex, node.endIndex);
 }
@@ -222,7 +289,10 @@ function walk(node, fn) {
         walk(child, fn);
     }
 }
-function extractSymbolsFromCode(code, filePath) {
+/**
+ * 异步版本 - 用于 C++ 的 WASM 实现
+ */
+async function extractSymbolsFromCodeAsync(code, filePath) {
     if (!code) {
         return [];
     }
@@ -234,6 +304,10 @@ function extractSymbolsFromCode(code, filePath) {
         console.warn(`[symbolExtractor] skip binary-like file: ${filePath}`);
         return [];
     }
+    // 确保已初始化
+    if (!isInitialized || !parser) {
+        await initSymbolExtractor();
+    }
     let tree;
     try {
         tree = parser.parse(code);
@@ -241,6 +315,9 @@ function extractSymbolsFromCode(code, filePath) {
     catch (error) {
         const err = error;
         console.warn(`[symbolExtractor] parse failed: ${filePath} (${err?.message ?? "unknown error"})`);
+        return [];
+    }
+    if (!tree) {
         return [];
     }
     const root = tree.rootNode;

@@ -1,5 +1,5 @@
-import Parser from "tree-sitter";
-import Cpp from "tree-sitter-cpp";
+import { Parser, Language, Node, Tree } from "web-tree-sitter";
+import * as path from "path";
 import { hashSignature, normalizeSignature } from "./signatureUtils";
 
 export type ExtractedSymbol = {
@@ -12,10 +12,52 @@ export type ExtractedSymbol = {
   implLine?: number;
 };
 
-const parser = new Parser();
-parser.setLanguage(Cpp);
+// Parser 实例和初始化状态
+let parser: Parser | null = null;
+let isInitialized = false;
 
-function getText(code: string, node: Parser.SyntaxNode): string {
+/**
+ * 初始化 web-tree-sitter parser
+ * 必须在使用前调用一次
+ */
+export async function initSymbolExtractor(): Promise<void> {
+  if (isInitialized) {
+    return;
+  }
+
+  try {
+    // 1. 初始化 WASM runtime
+    await Parser.init({
+      locateFile: (fileName: string) => path.join(__dirname, fileName)
+    });
+
+    // 2. 创建 Parser 实例
+    parser = new Parser();
+
+    // 3. 加载 C++ 语言 WASM
+    const wasmPath = path.join(__dirname, "wasm", "tree-sitter-cpp.wasm");
+    const Cpp = await Language.load(wasmPath);
+    parser.setLanguage(Cpp);
+
+    isInitialized = true;
+  } catch (error) {
+    console.error("Failed to initialize symbol extractor:", error);
+    throw error;
+  }
+}
+
+/**
+ * 同步占位符 - 保持向后兼容
+ * 其他语言适配器使用各自的实现
+ * C++ 应使用 extractSymbolsFromCodeAsync
+ */
+export function extractSymbolsFromCode(_code: string, _filePath: string): ExtractedSymbol[] {
+  throw new Error(
+    "extractSymbolsFromCode is not implemented for C++. Use extractSymbolsFromCodeAsync instead."
+  );
+}
+
+function getText(code: string, node: Node): string {
   return code.slice(node.startIndex, node.endIndex);
 }
 
@@ -28,14 +70,14 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function hasErrorNode(node: Parser.SyntaxNode): boolean {
+function hasErrorNode(node: Node): boolean {
   if (node.type === "ERROR") {
     return true;
   }
   return node.namedChildren.some((child) => hasErrorNode(child));
 }
 
-function findNamedChild(node: Parser.SyntaxNode, types: string[]): Parser.SyntaxNode | null {
+function findNamedChild(node: Node, types: string[]): Node | null {
   for (const child of node.namedChildren) {
     if (types.includes(child.type)) {
       return child;
@@ -44,7 +86,7 @@ function findNamedChild(node: Parser.SyntaxNode, types: string[]): Parser.Syntax
   return null;
 }
 
-function findDescendant(node: Parser.SyntaxNode, types: string[]): Parser.SyntaxNode | null {
+function findDescendant(node: Node, types: string[]): Node | null {
   for (const child of node.namedChildren) {
     if (types.includes(child.type)) {
       return child;
@@ -57,7 +99,7 @@ function findDescendant(node: Parser.SyntaxNode, types: string[]): Parser.Syntax
   return null;
 }
 
-function getClassName(node: Parser.SyntaxNode, code: string): string | null {
+function getClassName(node: Node, code: string): string | null {
   const nameNode = node.childForFieldName("name") || findDescendant(node, ["type_identifier"]);
   if (!nameNode) {
     return null;
@@ -65,7 +107,7 @@ function getClassName(node: Parser.SyntaxNode, code: string): string | null {
   return getText(code, nameNode).trim();
 }
 
-function getFunctionDeclarator(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
+function getFunctionDeclarator(node: Node): Node | null {
   if (node.type === "function_declarator") {
     return node;
   }
@@ -73,9 +115,9 @@ function getFunctionDeclarator(node: Parser.SyntaxNode): Parser.SyntaxNode | nul
 }
 
 function findNameInDeclarator(
-  declarator: Parser.SyntaxNode,
+  declarator: Node,
   code: string
-): Parser.SyntaxNode | null {
+): Node | null {
   if (
     [
       "qualified_identifier",
@@ -112,7 +154,7 @@ function findNameInDeclarator(
   return null;
 }
 
-function getFunctionName(declarator: Parser.SyntaxNode, code: string): string | null {
+function getFunctionName(declarator: Node, code: string): string | null {
   const nameNode = findNameInDeclarator(declarator, code);
   if (!nameNode) {
     return null;
@@ -122,8 +164,8 @@ function getFunctionName(declarator: Parser.SyntaxNode, code: string): string | 
 
 function buildSignature(
   code: string,
-  typeNode: Parser.SyntaxNode | null,
-  declarator: Parser.SyntaxNode | null
+  typeNode: Node | null,
+  declarator: Node | null
 ): string | null {
   if (!declarator) {
     return null;
@@ -139,7 +181,7 @@ function buildSignature(
 function appendQualifiers(
   signature: string,
   code: string,
-  node: Parser.SyntaxNode
+  node: Node
 ): string {
   const qualifierTypes = [
     "type_qualifier",
@@ -209,7 +251,7 @@ function addFunctionSymbol(params: {
 }
 
 function handleFunctionNode(
-  node: Parser.SyntaxNode,
+  node: Node,
   code: string,
   filePath: string,
   className?: string
@@ -256,7 +298,7 @@ function handleFunctionNode(
 }
 
 function handleFieldDeclaration(
-  node: Parser.SyntaxNode,
+  node: Node,
   code: string,
   filePath: string,
   className: string
@@ -276,14 +318,17 @@ function handleFieldDeclaration(
   return handleFunctionNode(node, code, filePath, className);
 }
 
-function walk(node: Parser.SyntaxNode, fn: (node: Parser.SyntaxNode) => void): void {
+function walk(node: Node, fn: (node: Node) => void): void {
   fn(node);
   for (const child of node.namedChildren) {
     walk(child, fn);
   }
 }
 
-export function extractSymbolsFromCode(code: string, filePath: string): ExtractedSymbol[] {
+/**
+ * 异步版本 - 用于 C++ 的 WASM 实现
+ */
+export async function extractSymbolsFromCodeAsync(code: string, filePath: string): Promise<ExtractedSymbol[]> {
   if (!code) {
     return [];
   }
@@ -296,12 +341,21 @@ export function extractSymbolsFromCode(code: string, filePath: string): Extracte
     return [];
   }
 
-  let tree: Parser.Tree;
+  // 确保已初始化
+  if (!isInitialized || !parser) {
+    await initSymbolExtractor();
+  }
+
+  let tree: Tree | null;
   try {
-    tree = parser.parse(code);
+    tree = parser!.parse(code);
   } catch (error) {
     const err = error as Error;
     console.warn(`[symbolExtractor] parse failed: ${filePath} (${err?.message ?? "unknown error"})`);
+    return [];
+  }
+
+  if (!tree) {
     return [];
   }
 

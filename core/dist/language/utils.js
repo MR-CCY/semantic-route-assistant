@@ -23,6 +23,7 @@ async function loadIgnore(projectRoot) {
             throw error;
         }
     }
+    ig.add(["node_modules/", "**/node_modules/**"]);
     return ig;
 }
 /**

@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.searchSkills = exports.summarizeFile = exports.updateModuleIndexV3 = exports.buildModuleIndexV3 = exports.updateIndexV2 = exports.buildIndexV2 = void 0;
+exports.updateSymbolTags = exports.removeSymbolTag = exports.addSymbolTag = exports.updateSymbolDescription = exports.incrementTagScore = exports.saveRouting = exports.loadRouting = exports.ROUTING_SCHEMA_VERSION = exports.searchSkills = exports.summarizeFile = exports.removeSkillsFiles = exports.generateSkillsFiles = exports.updateModuleIndexV3 = exports.buildModuleIndexV3 = exports.updateIndexV2 = exports.buildIndexV2 = void 0;
 exports.buildIndex = buildIndex;
 exports.updateIndex = updateIndex;
 const path_1 = __importDefault(require("path"));
@@ -23,6 +23,12 @@ Object.defineProperty(exports, "updateIndexV2", { enumerable: true, get: functio
 var indexV3_1 = require("./indexV3");
 Object.defineProperty(exports, "buildModuleIndexV3", { enumerable: true, get: function () { return indexV3_1.buildModuleIndexV3; } });
 Object.defineProperty(exports, "updateModuleIndexV3", { enumerable: true, get: function () { return indexV3_1.updateModuleIndexV3; } });
+var skillsGenerator_1 = require("./skillsGenerator");
+Object.defineProperty(exports, "generateSkillsFiles", { enumerable: true, get: function () { return skillsGenerator_1.generateSkillsFiles; } });
+Object.defineProperty(exports, "removeSkillsFiles", { enumerable: true, get: function () { return skillsGenerator_1.removeSkillsFiles; } });
+// Skills generation config (Removed)
+// export { setSkillsConfig, getSkillsConfig, DEFAULT_WHITELIST_TAGS } from "./skillsGenerator";
+// export type { SkillsConfig } from "./skillsGenerator";
 var llmClient_2 = require("./llmClient");
 Object.defineProperty(exports, "summarizeFile", { enumerable: true, get: function () { return llmClient_2.summarizeFile; } });
 async function buildIndex(projectRoot, outDir) {
@@ -62,3 +68,13 @@ async function updateIndex(projectRoot, outDir) {
     }
     await (0, metaStore_1.saveMeta)(outDir, meta);
 }
+// Routing Store
+var routingStore_1 = require("./routingStore");
+Object.defineProperty(exports, "ROUTING_SCHEMA_VERSION", { enumerable: true, get: function () { return routingStore_1.ROUTING_SCHEMA_VERSION; } });
+Object.defineProperty(exports, "loadRouting", { enumerable: true, get: function () { return routingStore_1.loadRouting; } });
+Object.defineProperty(exports, "saveRouting", { enumerable: true, get: function () { return routingStore_1.saveRouting; } });
+Object.defineProperty(exports, "incrementTagScore", { enumerable: true, get: function () { return routingStore_1.incrementTagScore; } });
+Object.defineProperty(exports, "updateSymbolDescription", { enumerable: true, get: function () { return routingStore_1.updateSymbolDescription; } });
+Object.defineProperty(exports, "addSymbolTag", { enumerable: true, get: function () { return routingStore_1.addSymbolTag; } });
+Object.defineProperty(exports, "removeSymbolTag", { enumerable: true, get: function () { return routingStore_1.removeSymbolTag; } });
+Object.defineProperty(exports, "updateSymbolTags", { enumerable: true, get: function () { return routingStore_1.updateSymbolTags; } });

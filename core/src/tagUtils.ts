@@ -18,7 +18,44 @@ const STOP_WORDS = new Set([
   "server",
   "client",
   "common",
-  "base"
+  "base",
+  "async",
+  "await",
+  "sync",
+  "promise",
+  "promises",
+  "callback",
+  "callbacks",
+  "try",
+  "catch",
+  "try_catch",
+  "module",
+  "modules",
+  "config",
+  "configuration",
+  "method",
+  "methods",
+  "get",
+  "post",
+  "put",
+  "delete",
+  "request",
+  "response",
+  "header",
+  "headers",
+  "body",
+  "http",
+  "api",
+  "url",
+  "uri",
+  "query",
+  "params",
+  "service",
+  "handler",
+  "handlers",
+  "manager",
+  "managers",
+  "data"
 ]);
 
 function splitCamelAndSnake(value: string): string[] {
@@ -127,6 +164,9 @@ export function filterSemanticTags(params: {
   symbolId: string;
 }): string[] {
   const { semanticTags, baseTags, filePath, symbolId } = params;
+  console.log(
+    `[filterSemanticTags] before file=${filePath} symbol=${symbolId} semanticTags=${JSON.stringify(semanticTags)} baseTags=${JSON.stringify(baseTags)}`
+  );
   const lowInfo = collectLowInfoTags(filePath, symbolId, baseTags);
   const filtered: string[] = [];
   const seen = new Set<string>();
@@ -147,9 +187,6 @@ export function filterSemanticTags(params: {
     }
     seen.add(normalized);
     filtered.push(normalized);
-    if (filtered.length >= 5) {
-      break;
-    }
   }
 
   return filtered;
